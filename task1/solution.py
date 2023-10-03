@@ -6,7 +6,6 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 import matplotlib.pyplot as plt
 from matplotlib import cm
 
-
 # Set `EXTENDED_EVALUATION` to `True` in order to visualize your predictions.
 EXTENDED_EVALUATION = False
 EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluation
@@ -29,20 +28,22 @@ class Model(object):
         We already provide a random number generator for reproducibility.
         """
         self.rng = np.random.default_rng(seed=0)
+        self.kernel = RBF()
+        self.model = GaussianProcessRegressor(kernel=self.kernel, random_state=self.rng.integers(1, 100))
 
-        # TODO: Add custom initialization for your model here if necessary
-
-    def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> (
+            typing.Tuple)[np.ndarray, np.ndarray, np.ndarray]:
         """
         Predict the pollution concentration for a given set of city_areas.
         :param test_x_2D: city_areas as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
-        :param test_x_AREA: city_area info for every sample in a form of a bool array (NUM_SAMPLES,)
+        :param test_x_AREA: city_area info for every sample in a form of a bool array (NUM_SAMPLES)
         :return:
             Tuple of three 1d NumPy float arrays, each of shape (NUM_SAMPLES,),
             containing your predictions, the GP posterior mean, and the GP posterior stddev (in that order)
         """
 
         # TODO: Use your GP to estimate the posterior mean and stddev for each city_area here
+
         gp_mean = np.zeros(test_x_2D.shape[0], dtype=float)
         gp_std = np.zeros(test_x_2D.shape[0], dtype=float)
 
@@ -51,15 +52,16 @@ class Model(object):
 
         return predictions, gp_mean, gp_std
 
-    def fitting_model(self, train_y: np.ndarray,train_x_2D: np.ndarray):
+    def fitting_model(self, train_y: np.ndarray, train_x_2D: np.ndarray):
         """
         Fit your model on the given training data.
         :param train_x_2D: Training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
-        :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES,)
+        :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES)
         """
 
         # TODO: Fit your model here
         pass
+
 
 # You don't have to change this function
 def cost_function(ground_truth: np.ndarray, predictions: np.ndarray, AREA_idxs: np.ndarray) -> float:
@@ -93,9 +95,10 @@ def is_in_circle(coor, circle_coor):
     :param circle_coor: 3D coordinate of the circle center and its radius
     :return: True if the coordinate is inside the circle, False otherwise
     """
-    return (coor[0] - circle_coor[0])**2 + (coor[1] - circle_coor[1])**2 < circle_coor[2]**2
+    return (coor[0] - circle_coor[0]) ** 2 + (coor[1] - circle_coor[1]) ** 2 < circle_coor[2] ** 2
 
-# You don't have to change this function 
+
+# You don't have to change this function
 def determine_city_area_idx(visualization_xs_2D):
     """
     Determines the city_area index for each coordinate in the visualization grid.
@@ -104,27 +107,28 @@ def determine_city_area_idx(visualization_xs_2D):
     """
     # Circles coordinates
     circles = np.array([[0.5488135, 0.71518937, 0.17167342],
-                    [0.79915856, 0.46147936, 0.1567626 ],
-                    [0.26455561, 0.77423369, 0.10298338],
-                    [0.6976312,  0.06022547, 0.04015634],
-                    [0.31542835, 0.36371077, 0.17985623],
-                    [0.15896958, 0.11037514, 0.07244247],
-                    [0.82099323, 0.09710128, 0.08136552],
-                    [0.41426299, 0.0641475,  0.04442035],
-                    [0.09394051, 0.5759465,  0.08729856],
-                    [0.84640867, 0.69947928, 0.04568374],
-                    [0.23789282, 0.934214,   0.04039037],
-                    [0.82076712, 0.90884372, 0.07434012],
-                    [0.09961493, 0.94530153, 0.04755969],
-                    [0.88172021, 0.2724369,  0.04483477],
-                    [0.9425836,  0.6339977,  0.04979664]])
-    
+                        [0.79915856, 0.46147936, 0.1567626],
+                        [0.26455561, 0.77423369, 0.10298338],
+                        [0.6976312, 0.06022547, 0.04015634],
+                        [0.31542835, 0.36371077, 0.17985623],
+                        [0.15896958, 0.11037514, 0.07244247],
+                        [0.82099323, 0.09710128, 0.08136552],
+                        [0.41426299, 0.0641475, 0.04442035],
+                        [0.09394051, 0.5759465, 0.08729856],
+                        [0.84640867, 0.69947928, 0.04568374],
+                        [0.23789282, 0.934214, 0.04039037],
+                        [0.82076712, 0.90884372, 0.07434012],
+                        [0.09961493, 0.94530153, 0.04755969],
+                        [0.88172021, 0.2724369, 0.04483477],
+                        [0.9425836, 0.6339977, 0.04979664]])
+
     visualization_xs_AREA = np.zeros((visualization_xs_2D.shape[0],))
 
-    for i,coor in enumerate(visualization_xs_2D):
+    for i, coor in enumerate(visualization_xs_2D):
         visualization_xs_AREA[i] = any([is_in_circle(coor, circ) for circ in circles])
 
     return visualization_xs_AREA
+
 
 # You don't have to change this function
 def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
@@ -142,7 +146,7 @@ def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
     )
     visualization_xs_2D = np.stack((grid_lon.flatten(), grid_lat.flatten()), axis=1)
     visualization_xs_AREA = determine_city_area_idx(visualization_xs_2D)
-    
+
     # Obtain predictions, means, and stddevs over the entire map
     predictions, gp_mean, gp_stddev = model.make_predictions(visualization_xs_2D, visualization_xs_AREA)
     predictions = np.reshape(predictions, (EVALUATION_GRID_POINTS, EVALUATION_GRID_POINTS))
@@ -154,7 +158,7 @@ def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
     fig, ax = plt.subplots()
     ax.set_title('Extended visualization of task 1')
     im = ax.imshow(predictions, vmin=vmin, vmax=vmax)
-    cbar = fig.colorbar(im, ax = ax)
+    cbar = fig.colorbar(im, ax=ax)
 
     # Save figure to pdf
     figure_path = os.path.join(output_dir, 'extended_evaluation.pdf')
@@ -164,7 +168,8 @@ def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
     plt.show()
 
 
-def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> (
+        typing.Tuple)[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Extracts the city_area information from the training and test features.
     :param train_x: Training features
@@ -177,13 +182,18 @@ def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> ty
     test_x_2D = np.zeros((test_x.shape[0], 2), dtype=float)
     test_x_AREA = np.zeros((test_x.shape[0],), dtype=bool)
 
-    #TODO: Extract the city_area information from the training and test features
+    train_x_2D[:, :2] = train_x[:, :2]
+    train_x_AREA[:] = train_x[:, 2] == 1.
+
+    test_x_2D[:, :2] = test_x[:, :2]
+    test_x_AREA[:] = test_x[:, 2] == 1.
 
     assert train_x_2D.shape[0] == train_x_AREA.shape[0] and test_x_2D.shape[0] == test_x_AREA.shape[0]
     assert train_x_2D.shape[1] == 2 and test_x_2D.shape[1] == 2
     assert train_x_AREA.ndim == 1 and test_x_AREA.ndim == 1
 
     return train_x_2D, train_x_AREA, test_x_2D, test_x_AREA
+
 
 # you don't have to change this function
 def main():
@@ -197,7 +207,7 @@ def main():
     # Fit the model
     print('Fitting model')
     model = Model()
-    model.fitting_model(train_y,train_x_2D)
+    model.fitting_model(train_y, train_x_2D)
 
     # Predict on the test features
     print('Predicting on test features')
