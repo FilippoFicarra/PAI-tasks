@@ -4,8 +4,8 @@ from sklearn.cluster import KMeans
 from sklearn.gaussian_process.kernels import *
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
-from matplotlib import cm
 
 # Set `EXTENDED_EVALUATION` to `True` in order to visualize your predictions.
 EXTENDED_EVALUATION = False
@@ -14,6 +14,34 @@ EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluatio
 # Cost function constants
 COST_W_UNDERPREDICT = 50.0
 COST_W_NORMAL = 1.0
+
+
+def cluster_data(train_y: np.ndarray, train_x_2D: np.ndarray, k: int = 1500):
+    """
+    Clusterize data in order to train the Gaussian process with less and
+    representative data
+    """
+    kmeans = KMeans(n_clusters=k, random_state=0, n_init="auto")
+    kmeans.fit(train_x_2D, train_y)
+
+    def find_nearest_points_to_centroids(centroids, data_points):
+        indices = []
+
+        for centroid in centroids:
+            distances = np.linalg.norm(data_points - centroid, axis=1)
+
+            index = np.argmin(distances)
+
+            indices.append(index)
+
+        return indices
+
+    x_train_new_indices = sorted(find_nearest_points_to_centroids(kmeans.cluster_centers_, train_x_2D))
+
+    x_train_new = train_x_2D[x_train_new_indices]
+    y_train_new = train_y[x_train_new_indices]
+
+    return x_train_new_indices, x_train_new, y_train_new
 
 
 class Model(object):
@@ -28,36 +56,10 @@ class Model(object):
         Initialize your model here.
         We already provide a random number generator for reproducibility.
         """
-        self.rng = np.random.default_rng(seed=0)
-        self.kernel = RBF()
-        self.model = GaussianProcessRegressor(kernel=self.kernel, random_state=self.rng.integers(1, 100))
-
-    def clusterize_data(self, train_y: np.ndarray, train_x_2D: np.ndarray, k: int = 1500):
-        """
-        Clusterize data in order to train the Gaussian process with less and
-        representative data
-        """
-        kmeans = KMeans(n_clusters=k, random_state=0, n_init="auto")
-        kmeans.fit(train_x_2D, train_y)
-
-        def find_nearest_points_to_centroids(centroids, data_points):
-            indices = []
-
-            for centroid in centroids:
-                distances = np.linalg.norm(data_points - centroid, axis=1)
-                
-                index = np.argmin(distances)
-                
-                indices.append(index)
-
-            return indices
-
-        x_train_new_indices = sorted(find_nearest_points_to_centroids(kmeans.cluster_centers_, train_x_2D))
-
-        x_train_new = train_x_2D[x_train_new_indices]
-        y_train_new = train_y[x_train_new_indices]
-
-        return x_train_new_indices, x_train_new, y_train_new
+        self.scaler = StandardScaler()
+        self.kernel = Matern() + WhiteKernel()
+        self.model = GaussianProcessRegressor(kernel=self.kernel, random_state=42, n_restarts_optimizer=10,
+                                              normalize_y=True)
 
     def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> (
             typing.Tuple)[np.ndarray, np.ndarray, np.ndarray]:
@@ -75,13 +77,16 @@ class Model(object):
         # gp_mean = np.zeros(test_x_2D.shape[0], dtype=float)
         # gp_std = np.zeros(test_x_2D.shape[0], dtype=float)
 
-        # posterior mean and std for the gassian process
-        gp_mean, gp_std = self.model.predict(test_x_2D, return_std=True)
+        # Scale test data
+        test_x_2D = self.scaler.fit_transform(test_x_2D)
+
+        # posterior mean and std for the gaussian process
+        gp_mean, gp_cov = self.model.predict(test_x_2D, return_cov=True)
 
         # TODO: Use the GP posterior to form your predictions here
-        predictions = gp_mean
+        predictions = np.random.multivariate_normal(gp_mean, gp_cov)
 
-        return predictions, gp_mean, gp_std
+        return predictions, gp_mean, gp_cov
 
     def fitting_model(self, train_y: np.ndarray, train_x_2D: np.ndarray):
         """
@@ -90,11 +95,12 @@ class Model(object):
         :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES)
         """
 
-        # TODO: Fit your model here
-        indices, x_train, y_train = self.clusterize_data(train_y, train_x_2D, k = 3000)
+        indices, x_train, y_train = cluster_data(train_y, train_x_2D, k=3000)
+        # Standardize x and y vectors
+        x_train = self.scaler.fit_transform(x_train)
 
-        
-
+        # Fit Gaussian Process Regressor
+        self.model = self.model.fit(x_train, y_train)
 
 
 # You don't have to change this function
