@@ -1,3 +1,6 @@
 /.idea
 task1/*.csv
 .gitattributes
+venv
+.DS_Store
+task1/clustering.py

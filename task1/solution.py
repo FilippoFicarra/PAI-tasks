@@ -1,5 +1,6 @@
 import os
 import typing
+from sklearn.cluster import KMeans
 from sklearn.gaussian_process.kernels import *
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
@@ -31,6 +32,33 @@ class Model(object):
         self.kernel = RBF()
         self.model = GaussianProcessRegressor(kernel=self.kernel, random_state=self.rng.integers(1, 100))
 
+    def clusterize_data(self, train_y: np.ndarray, train_x_2D: np.ndarray, k: int = 1500):
+        """
+        Clusterize data in order to train the Gaussian process with less and
+        representative data
+        """
+        kmeans = KMeans(n_clusters=k, random_state=0, n_init="auto")
+        kmeans.fit(train_x_2D, train_y)
+
+        def find_nearest_points_to_centroids(centroids, data_points):
+            indices = []
+
+            for centroid in centroids:
+                distances = np.linalg.norm(data_points - centroid, axis=1)
+                
+                index = np.argmin(distances)
+                
+                indices.append(index)
+
+            return indices
+
+        x_train_new_indices = sorted(find_nearest_points_to_centroids(kmeans.cluster_centers_, train_x_2D))
+
+        x_train_new = train_x_2D[x_train_new_indices]
+        y_train_new = train_y[x_train_new_indices]
+
+        return x_train_new_indices, x_train_new, y_train_new
+
     def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> (
             typing.Tuple)[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -44,8 +72,11 @@ class Model(object):
 
         # TODO: Use your GP to estimate the posterior mean and stddev for each city_area here
 
-        gp_mean = np.zeros(test_x_2D.shape[0], dtype=float)
-        gp_std = np.zeros(test_x_2D.shape[0], dtype=float)
+        # gp_mean = np.zeros(test_x_2D.shape[0], dtype=float)
+        # gp_std = np.zeros(test_x_2D.shape[0], dtype=float)
+
+        # posterior mean and std for the gassian process
+        gp_mean, gp_std = self.model.predict(test_x_2D, return_std=True)
 
         # TODO: Use the GP posterior to form your predictions here
         predictions = gp_mean
@@ -60,7 +91,10 @@ class Model(object):
         """
 
         # TODO: Fit your model here
-        pass
+        indices, x_train, y_train = self.clusterize_data(train_y, train_x_2D, k = 3000)
+
+        
+
 
 
 # You don't have to change this function
