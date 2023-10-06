@@ -4,8 +4,9 @@ from sklearn.cluster import KMeans
 from sklearn.gaussian_process.kernels import *
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import matplotlib.pyplot as plt
+from matplotlib import cm
 
 # Set `EXTENDED_EVALUATION` to `True` in order to visualize your predictions.
 EXTENDED_EVALUATION = False
@@ -14,6 +15,19 @@ EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluatio
 # Cost function constants
 COST_W_UNDERPREDICT = 50.0
 COST_W_NORMAL = 1.0
+
+ADJ_FACTOR = 0.1
+
+
+def plot_data(x: np.ndarray, y: np.ndarray):
+    # Plot predictions
+    plt.figure(figsize=(20, 20))
+    y_0_1 = (y - np.min(y)) / (np.max(y) - np.min(y))
+    cmap = cm.get_cmap('coolwarm')
+    color = cmap(y_0_1)[:, :3]
+
+    plt.scatter(x[:, 0], x[:, 1], c=color)
+    plt.show()
 
 
 def cluster_data(train_y: np.ndarray, train_x_2D: np.ndarray, k: int = 1500):
@@ -40,6 +54,8 @@ def cluster_data(train_y: np.ndarray, train_x_2D: np.ndarray, k: int = 1500):
 
     x_train_new = train_x_2D[x_train_new_indices]
     y_train_new = train_y[x_train_new_indices]
+
+    plot_data(x_train_new, y_train_new)
 
     return x_train_new_indices, x_train_new, y_train_new
 
@@ -80,13 +96,27 @@ class Model(object):
         # Scale test data
         test_x_2D = self.scaler.fit_transform(test_x_2D)
 
-        # posterior mean and std for the gaussian process
+        # Get posterior mean and covariance matrix for the gaussian process
         gp_mean, gp_cov = self.model.predict(test_x_2D, return_cov=True)
 
-        # TODO: Use the GP posterior to form your predictions here
+        # Get std
+        gp_std = np.zeros(gp_mean.shape)
+
+        for i in range(gp_mean.shape[0]):
+            gp_std[i] = math.sqrt(gp_cov[i][i])
+
         predictions = np.random.multivariate_normal(gp_mean, gp_cov)
 
-        return predictions, gp_mean, gp_cov
+        # Plot predictions
+        plot_data(test_x_2D, predictions)
+
+        # Adjust predictions
+        for i in range(test_x_AREA.shape[0]):
+            if test_x_AREA[i] and predictions[i] < gp_mean[i]:
+                # Adjust prediction by shifting it by k*(mean[i] - prediction[i])
+                predictions[i] += ADJ_FACTOR*(gp_mean[i] - predictions[i])
+
+        return predictions, gp_mean, gp_mean
 
     def fitting_model(self, train_y: np.ndarray, train_x_2D: np.ndarray):
         """
