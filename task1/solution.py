@@ -4,7 +4,7 @@ from sklearn.cluster import KMeans
 from sklearn.gaussian_process.kernels import *
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 from matplotlib import cm
 
@@ -72,10 +72,10 @@ class Model(object):
         Initialize your model here.
         We already provide a random number generator for reproducibility.
         """
+        self.mean_y = None
         self.scaler = StandardScaler()
-        self.kernel = Matern() + WhiteKernel()
-        self.model = GaussianProcessRegressor(kernel=self.kernel, random_state=42, n_restarts_optimizer=10,
-                                              normalize_y=True)
+        self.kernel = ConstantKernel() * Matern(length_scale=0.1) + DotProduct()
+        self.model = GaussianProcessRegressor(kernel=self.kernel, alpha=1., random_state=42, n_restarts_optimizer=10)
 
     def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> (
             typing.Tuple)[np.ndarray, np.ndarray, np.ndarray]:
@@ -94,10 +94,11 @@ class Model(object):
         # gp_std = np.zeros(test_x_2D.shape[0], dtype=float)
 
         # Scale test data
-        test_x_2D = self.scaler.fit_transform(test_x_2D)
+        # test_x_2D = self.scaler.fit_transform(test_x_2D)
 
         # Get posterior mean and covariance matrix for the gaussian process
         gp_mean, gp_cov = self.model.predict(test_x_2D, return_cov=True)
+        gp_mean = gp_mean + self.mean_y
 
         # Get std
         gp_std = np.zeros(gp_mean.shape)
@@ -112,9 +113,9 @@ class Model(object):
 
         # Adjust predictions
         for i in range(test_x_AREA.shape[0]):
-            if test_x_AREA[i] and predictions[i] < gp_mean[i]:
+            if test_x_AREA[i]:
                 # Adjust prediction by shifting it by k*(mean[i] - prediction[i])
-                predictions[i] += ADJ_FACTOR*(gp_mean[i] - predictions[i])
+                predictions[i] += ADJ_FACTOR*(abs(gp_mean[i] - predictions[i]))
 
         return predictions, gp_mean, gp_mean
 
@@ -127,8 +128,10 @@ class Model(object):
 
         indices, x_train, y_train = cluster_data(train_y, train_x_2D, k=3000)
         # Standardize x and y vectors
-        x_train = self.scaler.fit_transform(x_train)
-
+        # x_train = self.scaler.fit_transform(x_train)
+        # Remove mean before fitting
+        self.mean_y = y_train.mean()
+        y_train = y_train - self.mean_y
         # Fit Gaussian Process Regressor
         self.model = self.model.fit(x_train, y_train)
 
