@@ -1,13 +1,20 @@
 import os
 import typing
-from sklearn.cluster import KMeans
-from sklearn.gaussian_process.kernels import *
+
+import torch
+from gpytorch.models import ExactGP
+from gpytorch.kernels import ScaleKernel, MaternKernel, LinearKernel
+from gpytorch.means import ConstantMean
+from gpytorch.distributions import MultivariateNormal
+from gpytorch.likelihoods import GaussianLikelihood
+from gpytorch.mlls import ExactMarginalLogLikelihood
 import numpy as np
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.preprocessing import StandardScaler
+
 import matplotlib.pyplot as plt
 from matplotlib import cm
+from sklearn.cluster import KMeans
 
+# Variables
 # Set `EXTENDED_EVALUATION` to `True` in order to visualize your predictions.
 EXTENDED_EVALUATION = False
 EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluation
@@ -16,9 +23,11 @@ EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluatio
 COST_W_UNDERPREDICT = 50.0
 COST_W_NORMAL = 1.0
 
-ADJ_FACTOR = 0.1
+ADJ_FACTOR = 1.
+TRAINING_ITERATIONS = 750
 
 
+# Functions
 def plot_data(x: np.ndarray, y: np.ndarray):
     # Plot predictions
     plt.figure(figsize=(20, 20))
@@ -63,77 +72,6 @@ def cluster_data(train_y: np.ndarray, train_x_2D: np.ndarray, k: int = 1500, plo
     return x_train_new_indices, x_train_new, y_train_new
 
 
-class Model(object):
-    """
-    Model for this task.
-    You need to implement the fit_model and predict methods
-    without changing their signatures, but are allowed to create additional methods.
-    """
-
-    def __init__(self):
-        """
-        Initialize your model here.
-        We already provide a random number generator for reproducibility.
-        """
-        self.mean_y = None
-        self.scaler = StandardScaler()
-        self.kernel = ConstantKernel() * Matern(length_scale=0.1) + DotProduct()
-        self.model = GaussianProcessRegressor(kernel=self.kernel, alpha=0.1, random_state=42, n_restarts_optimizer=10)
-
-    def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> (
-            typing.Tuple)[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Predict the pollution concentration for a given set of city_areas.
-        :param test_x_2D: city_areas as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
-        :param test_x_AREA: city_area info for every sample in a form of a bool array (NUM_SAMPLES)
-        :return:
-            Tuple of three 1d NumPy float arrays, each of shape (NUM_SAMPLES,),
-            containing your predictions, the GP posterior mean, and the GP posterior stddev (in that order)
-        """
-
-        # TODO: Use your GP to estimate the posterior mean and stddev for each city_area here
-
-        # gp_mean = np.zeros(test_x_2D.shape[0], dtype=float)
-        # gp_std = np.zeros(test_x_2D.shape[0], dtype=float)
-
-        # Scale test data
-        # test_x_2D = self.scaler.fit_transform(test_x_2D)
-
-        # Get posterior mean and std for the gaussian process
-        gp_mean, gp_std = self.model.predict(test_x_2D, return_std=True)
-        gp_mean = gp_mean + self.mean_y
-
-        predictions = gp_mean
-
-        # Plot predictions
-        plot_data(test_x_2D, predictions)
-
-        # Adjust predictions
-        for i in range(test_x_AREA.shape[0]):
-            if test_x_AREA[i]:
-                # Adjust prediction by shifting it by a value proportional to the standard deviation
-                predictions[i] += ADJ_FACTOR*gp_std[i]
-
-        return predictions, gp_mean, gp_mean
-
-    def fitting_model(self, train_y: np.ndarray, train_x_2D: np.ndarray):
-        """
-        Fit your model on the given training data.
-        :param train_x_2D: Training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
-        :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES)
-        """
-
-        indices, x_train, y_train = cluster_data(train_y, train_x_2D, k=3000)
-        # Standardize x and y vectors
-        # x_train = self.scaler.fit_transform(x_train)
-        # Remove mean before fitting
-        self.mean_y = y_train.mean()
-        y_train = y_train - self.mean_y
-        # Fit Gaussian Process Regressor
-        self.model.fit(x_train, y_train)
-
-
-# You don't have to change this function
 def cost_function(ground_truth: np.ndarray, predictions: np.ndarray, AREA_idxs: np.ndarray) -> float:
     """
     Calculates the cost of a set of predictions.
@@ -201,6 +139,152 @@ def determine_city_area_idx(visualization_xs_2D):
 
 
 # You don't have to change this function
+
+
+def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> (
+        typing.Tuple)[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Extracts the city_area information from the training and test features.
+    :param train_x: Training features
+    :param test_x: Test features
+    :return: Tuple of (training features' 2D coordinates, training features' city_area information,
+        test features' 2D coordinates, test features' city_area information)
+    """
+    train_x_2D = np.zeros((train_x.shape[0], 2), dtype=float)
+    train_x_AREA = np.zeros((train_x.shape[0],), dtype=bool)
+    test_x_2D = np.zeros((test_x.shape[0], 2), dtype=float)
+    test_x_AREA = np.zeros((test_x.shape[0],), dtype=bool)
+
+    train_x_2D[:, :2] = train_x[:, :2]
+    train_x_AREA[:] = train_x[:, 2] == 1.
+
+    test_x_2D[:, :2] = test_x[:, :2]
+    test_x_AREA[:] = test_x[:, 2] == 1.
+
+    assert train_x_2D.shape[0] == train_x_AREA.shape[0] and test_x_2D.shape[0] == test_x_AREA.shape[0]
+    assert train_x_2D.shape[1] == 2 and test_x_2D.shape[1] == 2
+    assert train_x_AREA.ndim == 1 and test_x_AREA.ndim == 1
+
+    return train_x_2D, train_x_AREA, test_x_2D, test_x_AREA
+
+
+class ExactGPModel(ExactGP):
+    def __init__(self, train_x, train_y, likelihood):
+        super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
+        self.mean_module = ConstantMean()
+        self.covar_module = ScaleKernel(MaternKernel()) + LinearKernel()
+
+    def forward(self, x):
+        mean_x = self.mean_module(x)
+        covar_x = self.covar_module(x)
+        return MultivariateNormal(mean_x, covar_x)
+
+
+class Model(object):
+    """
+    Model for this task.
+    You need to implement the fit_model and predict methods
+    without changing their signatures, but are allowed to create additional methods.
+    """
+
+    def __init__(self):
+        """
+        Initialize your model here.
+        We already provide a random number generator for reproducibility.
+        """
+        self.mean_y = None
+        self.likelihood = None
+        self.model = None
+
+    def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> (
+            typing.Tuple)[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Predict the pollution concentration for a given set of city_areas.
+        :param test_x_2D: city_areas as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
+        :param test_x_AREA: city_area info for every sample in a form of a bool array (NUM_SAMPLES)
+        :return:
+            Tuple of three 1d NumPy float arrays, each of shape (NUM_SAMPLES,),
+            containing your predictions, the GP posterior mean, and the GP posterior stddev (in that order)
+        """
+        # Create tensor
+        test_x_2D = torch.tensor(test_x_2D, dtype=torch.float32)
+
+        self.model.eval()
+        self.likelihood.eval()
+
+        with torch.no_grad():
+            f_preds = self.model(test_x_2D)
+            gp_mean = f_preds.mean + self.mean_y
+            gp_std = torch.sqrt(f_preds.covariance_matrix.diag()).numpy()
+
+        predictions = gp_mean.numpy()
+
+        # Adjust predictions
+        for i in range(test_x_AREA.shape[0]):
+            if test_x_AREA[i]:
+                # Adjust prediction by shifting it by a value proportional to the standard deviation
+                predictions[i] += ADJ_FACTOR * gp_std[i]
+
+        # Plot predictions
+        plot_data(test_x_2D.numpy(), predictions)
+
+        return predictions, gp_mean, gp_std
+
+    def fitting_model(self, train_y: np.ndarray, train_x_2D: np.ndarray):
+        """
+        Fit your model on the given training data.
+        :param train_x_2D: Training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
+        :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES)
+        """
+
+        indices, x_train, train_y = cluster_data(train_y, train_x_2D, k=3000, plot=False)
+        # Remove mean before fitting
+        self.mean_y = train_y.mean()
+        train_y = train_y - self.mean_y
+
+        # Create tensors
+        x_train = torch.tensor(x_train, dtype=torch.float32)
+        train_y = torch.tensor(train_y, dtype=torch.float32)
+
+        self.likelihood = GaussianLikelihood()
+        self.model = ExactGPModel(x_train, train_y, self.likelihood)
+
+        # Set model and likelihood for training
+        self.model.train()
+        self.likelihood.train()
+
+        # Use the adam optimizer
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.25)
+
+        # "Loss" for GPs - the marginal log likelihood
+        mll = ExactMarginalLogLikelihood(self.likelihood, self.model)
+
+        print("Model hyperparameters before training.")
+        print(f"Matern: length_scale - {self.model.covar_module.kernels[0].base_kernel.lengthscale.item()},"
+              f" nu - {self.model.covar_module.kernels[0].base_kernel.nu}."
+              f" Linear: variance - {self.model.covar_module.kernels[1].variance.item()}."
+              f"Scale: {self.model.covar_module.kernels[0].outputscale.item()}")
+
+        for i in range(TRAINING_ITERATIONS):
+            # Zero gradients from previous iteration
+            optimizer.zero_grad()
+            # Output from model
+            output = self.model(x_train)
+            # Calc loss and backprop gradients
+            loss = -mll(output, train_y)
+            loss.backward()
+            print(
+                f"Iter {i + 1}/{TRAINING_ITERATIONS} - Loss: {loss.item()}  noise: {self.model.likelihood.noise.item()}")
+            optimizer.step()
+
+        # Print model hyperparameters
+        print("Model hyperparameters after training.")
+        print(f"Matern: length_scale - {self.model.covar_module.kernels[0].base_kernel.lengthscale.item()},"
+              f" nu - {self.model.covar_module.kernels[0].base_kernel.nu}."
+              f" Linear: variance - {self.model.covar_module.kernels[1].variance.item()}."
+              f" Scale: {self.model.covar_module.kernels[0].outputscale.item()}")
+
+
 def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
     """
     Visualizes the predictions of a fitted model.
@@ -238,34 +322,6 @@ def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
     plt.show()
 
 
-def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> (
-        typing.Tuple)[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Extracts the city_area information from the training and test features.
-    :param train_x: Training features
-    :param test_x: Test features
-    :return: Tuple of (training features' 2D coordinates, training features' city_area information,
-        test features' 2D coordinates, test features' city_area information)
-    """
-    train_x_2D = np.zeros((train_x.shape[0], 2), dtype=float)
-    train_x_AREA = np.zeros((train_x.shape[0],), dtype=bool)
-    test_x_2D = np.zeros((test_x.shape[0], 2), dtype=float)
-    test_x_AREA = np.zeros((test_x.shape[0],), dtype=bool)
-
-    train_x_2D[:, :2] = train_x[:, :2]
-    train_x_AREA[:] = train_x[:, 2] == 1.
-
-    test_x_2D[:, :2] = test_x[:, :2]
-    test_x_AREA[:] = test_x[:, 2] == 1.
-
-    assert train_x_2D.shape[0] == train_x_AREA.shape[0] and test_x_2D.shape[0] == test_x_AREA.shape[0]
-    assert train_x_2D.shape[1] == 2 and test_x_2D.shape[1] == 2
-    assert train_x_AREA.ndim == 1 and test_x_AREA.ndim == 1
-
-    return train_x_2D, train_x_AREA, test_x_2D, test_x_AREA
-
-
-# you don't have to change this function
 def main():
     # Load the training dateset and test features
     train_x = np.loadtxt('train_x.csv', delimiter=',', skiprows=1)

@@ -1,5 +1,4 @@
 /.idea
-task1/*.csv
 .gitattributes
 venv
 .DS_Store
