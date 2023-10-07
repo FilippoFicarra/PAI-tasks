@@ -179,6 +179,9 @@ class ExactGPModel(ExactGP):
         covar_x = self.covar_module(x)
         return MultivariateNormal(mean_x, covar_x)
 
+    def change_kernel(self, kernel):
+        self.covar_module = kernel
+
 
 class Model(object):
     """
@@ -237,17 +240,17 @@ class Model(object):
         :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES)
         """
 
-        indices, x_train, train_y = cluster_data(train_y, train_x_2D, k=3000, plot=False)
+        indices, x_train, y_train = cluster_data(train_y, train_x_2D, k=3000, plot=False)
         # Remove mean before fitting
-        self.mean_y = train_y.mean()
-        train_y = train_y - self.mean_y
+        self.mean_y = y_train.mean()
+        y_train = y_train - self.mean_y
 
         # Create tensors
         x_train = torch.tensor(x_train, dtype=torch.float32)
-        train_y = torch.tensor(train_y, dtype=torch.float32)
+        y_train = torch.tensor(y_train, dtype=torch.float32)
 
         self.likelihood = GaussianLikelihood()
-        self.model = ExactGPModel(x_train, train_y, self.likelihood)
+        self.model = ExactGPModel(x_train, y_train, self.likelihood)
 
         # Set model and likelihood for training
         self.model.train()
@@ -271,17 +274,17 @@ class Model(object):
             # Output from model
             output = self.model(x_train)
             # Calc loss and backprop gradients
-            loss = -mll(output, train_y)
+            loss = -mll(output, y_train)
             loss.backward()
             print(
-                f"Iter {i + 1}/{TRAINING_ITERATIONS} - Loss: {loss.item()}  noise: {self.model.likelihood.noise.item()}")
+                f"Iter {i + 1}/{TRAINING_ITERATIONS} - Loss: {loss.item()} noise: {self.model.likelihood.noise.item()}")
             optimizer.step()
 
         # Print model hyperparameters
         print("Model hyperparameters after training.")
-        print(f"Matern: length_scale - {self.model.covar_module.kernels[0].base_kernel.lengthscale.item()},"
-              f" nu - {self.model.covar_module.kernels[0].base_kernel.nu}."
-              f" Linear: variance - {self.model.covar_module.kernels[1].variance.item()}."
+        print(f"Matern: length_scale {self.model.covar_module.kernels[0].base_kernel.lengthscale.item()},"
+              f" nu {self.model.covar_module.kernels[0].base_kernel.nu}."
+              f" Linear: variance {self.model.covar_module.kernels[1].variance.item()}."
               f" Scale: {self.model.covar_module.kernels[0].outputscale.item()}")
 
 
