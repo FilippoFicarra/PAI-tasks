@@ -23,8 +23,8 @@ EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluatio
 COST_W_UNDERPREDICT = 50.0
 COST_W_NORMAL = 1.0
 
-ADJ_FACTOR = 1.
-TRAINING_ITERATIONS = 750
+ADJ_FACTOR = 2.
+TRAINING_ITERATIONS = 1000
 
 
 # Functions
