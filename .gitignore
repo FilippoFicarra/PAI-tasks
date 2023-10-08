@@ -3,3 +3,4 @@
 venv
 .DS_Store
 task1/clustering.py
+\__pycache__

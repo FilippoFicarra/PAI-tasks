@@ -23,7 +23,7 @@ EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluatio
 COST_W_UNDERPREDICT = 50.0
 COST_W_NORMAL = 1.0
 
-ADJ_FACTOR = 2.
+ADJ_FACTOR_AREA_1 = 1.21
 TRAINING_ITERATIONS = 1000
 
 
@@ -179,9 +179,6 @@ class ExactGPModel(ExactGP):
         covar_x = self.covar_module(x)
         return MultivariateNormal(mean_x, covar_x)
 
-    def change_kernel(self, kernel):
-        self.covar_module = kernel
-
 
 class Model(object):
     """
@@ -195,7 +192,6 @@ class Model(object):
         Initialize your model here.
         We already provide a random number generator for reproducibility.
         """
-        self.mean_y = None
         self.likelihood = None
         self.model = None
 
@@ -217,16 +213,16 @@ class Model(object):
 
         with torch.no_grad():
             f_preds = self.model(test_x_2D)
-            gp_mean = f_preds.mean + self.mean_y
-            gp_std = torch.sqrt(f_preds.covariance_matrix.diag()).numpy()
+            gp_mean = f_preds.mean.numpy()
+            gp_std = torch.sqrt(f_preds.variance).numpy()
 
-        predictions = gp_mean.numpy()
+        predictions = gp_mean
 
         # Adjust predictions
         for i in range(test_x_AREA.shape[0]):
             if test_x_AREA[i]:
                 # Adjust prediction by shifting it by a value proportional to the standard deviation
-                predictions[i] += ADJ_FACTOR * gp_std[i]
+                predictions[i] += ADJ_FACTOR_AREA_1 * gp_std[i]
 
         # Plot predictions
         plot_data(test_x_2D.numpy(), predictions)
@@ -240,17 +236,15 @@ class Model(object):
         :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES)
         """
 
-        indices, x_train, y_train = cluster_data(train_y, train_x_2D, k=3000, plot=False)
-        # Remove mean before fitting
-        self.mean_y = y_train.mean()
-        y_train = y_train - self.mean_y
+        _, x_train, train_y = cluster_data(train_y, train_x_2D, k=5000, plot=False)
 
         # Create tensors
         x_train = torch.tensor(x_train, dtype=torch.float32)
-        y_train = torch.tensor(y_train, dtype=torch.float32)
+        train_y = torch.tensor(train_y, dtype=torch.float32)
 
+        # Define likelihood and model
         self.likelihood = GaussianLikelihood()
-        self.model = ExactGPModel(x_train, y_train, self.likelihood)
+        self.model = ExactGPModel(x_train, train_y, self.likelihood)
 
         # Set model and likelihood for training
         self.model.train()
@@ -274,17 +268,18 @@ class Model(object):
             # Output from model
             output = self.model(x_train)
             # Calc loss and backprop gradients
-            loss = -mll(output, y_train)
+            loss = -mll(output, train_y)
             loss.backward()
-            print(
-                f"Iter {i + 1}/{TRAINING_ITERATIONS} - Loss: {loss.item()} noise: {self.model.likelihood.noise.item()}")
+            if (i+1) % 50 == 0:
+                print(
+                    f"Iter {i + 1}/{TRAINING_ITERATIONS} - Loss: {loss.item()}  noise: {self.model.likelihood.noise.item()}")
             optimizer.step()
 
         # Print model hyperparameters
         print("Model hyperparameters after training.")
-        print(f"Matern: length_scale {self.model.covar_module.kernels[0].base_kernel.lengthscale.item()},"
-              f" nu {self.model.covar_module.kernels[0].base_kernel.nu}."
-              f" Linear: variance {self.model.covar_module.kernels[1].variance.item()}."
+        print(f"Matern: length_scale - {self.model.covar_module.kernels[0].base_kernel.lengthscale.item()},"
+              f" nu - {self.model.covar_module.kernels[0].base_kernel.nu}."
+              f" Linear: variance - {self.model.covar_module.kernels[1].variance.item()}."
               f" Scale: {self.model.covar_module.kernels[0].outputscale.item()}")
 
 

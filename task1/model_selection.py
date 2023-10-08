@@ -9,7 +9,7 @@ from solution_torch import ExactGPModel
 
 # Variables
 ADJ_FACTOR = 2.
-TRAINING_ITERATIONS = 250
+TRAINING_ITERATIONS = 500
 
 
 def train(x_train, y_train, model, likelihood):
@@ -37,15 +37,15 @@ def train(x_train, y_train, model, likelihood):
         optimizer.step()
 
 
-def predict_and_evaluate(x_test, x_test_AREA, ground_truth, model, likelihood, mean_y):
+def predict_and_evaluate(x_test, x_test_AREA, ground_truth, model, likelihood):
     # Set model and likelihood for evaluation
     model.eval()
     likelihood.eval()
 
     with torch.no_grad():
         y_preds = likelihood(model(x_test))
-        gp_mean = y_preds.mean + mean_y
-        gp_std = torch.sqrt(y_preds.covariance_matrix.diag()).numpy()
+        gp_mean = y_preds.mean
+        gp_std = torch.sqrt(y_preds.variance).numpy()
 
     predictions = gp_mean.numpy()
 
@@ -72,11 +72,12 @@ def k_fold_cross_validation(x_train, y_train, x_train_AREA, k):
         indeces = np.setdiff1d(indeces, folds[len(folds) - 1])
 
     # Define kernels to test
-    kernels = {"c*rbf*rbf": ScaleKernel(RBFKernel() * RBFKernel()), "c*(rbf+rbf)": ScaleKernel(RBFKernel() + RBFKernel()),
-               "l+c*rbf": LinearKernel() + ScaleKernel(RBFKernel()),
-               "c*matern*matern": ScaleKernel(MaternKernel()*MaternKernel()),
-               "c*(matern+matern)": ScaleKernel(MaternKernel() + MaternKernel()),
-               "l+c*matern": LinearKernel() + ScaleKernel(MaternKernel())}
+    kernels = {"c*rbf*rbf": [ScaleKernel(RBFKernel() * RBFKernel()) for _ in range(k)],
+               "c*(rbf+rbf)": [ScaleKernel(RBFKernel() + RBFKernel()) for _ in range(k)],
+               "l+c*rbf": [LinearKernel() + ScaleKernel(RBFKernel()) for _ in range(k)],
+               "c*matern*matern": [ScaleKernel(MaternKernel()*MaternKernel()) for _ in range(k)],
+               "c*(matern+matern)": [ScaleKernel(MaternKernel() + MaternKernel()) for _ in range(k)],
+               "l+c*matern": [LinearKernel() + ScaleKernel(MaternKernel()) for _ in range(k)]}
 
     mean_costs = {}
     all_costs = {}
@@ -86,7 +87,6 @@ def k_fold_cross_validation(x_train, y_train, x_train_AREA, k):
         kernel_costs = np.zeros(k)
         for j in range(k):
             print(f"Evaluation {j+1}/{k} for {name}.")
-            # TODO Reset kernel parameters
 
             # Define current training and validation sets. folds[i] is used for testing
             k_fold_test_x, k_fold_test_y = x_train[folds[j], :], y_train[folds[j]]
@@ -94,8 +94,8 @@ def k_fold_cross_validation(x_train, y_train, x_train_AREA, k):
             k_fold_test_x_AREA = x_train_AREA[folds[j]]
 
             # Remove mean from y and train model.
-            mean_y = k_fold_train_y.mean()
-            k_fold_train_y = k_fold_train_y - mean_y
+            # mean_y = k_fold_train_y.mean()
+            # k_fold_train_y = k_fold_train_y - mean_y
 
             # Transform arrays to tensors
             k_fold_test_x = torch.tensor(k_fold_test_x, dtype=torch.float32)
@@ -105,13 +105,13 @@ def k_fold_cross_validation(x_train, y_train, x_train_AREA, k):
             # Define model and change kernel
             likelihood = GaussianLikelihood()
             model = ExactGPModel(k_fold_train_x, k_fold_train_y, likelihood)
-            model.change_kernel(kernel)
+            model.change_kernel(kernel[j])
 
             # Train model
             train(k_fold_train_x, k_fold_train_y, model, likelihood)
 
             # Predict and evaluate using cost function
-            cost = predict_and_evaluate(k_fold_test_x, k_fold_test_x_AREA, k_fold_test_y, model, likelihood, mean_y)
+            cost = predict_and_evaluate(k_fold_test_x, k_fold_test_x_AREA, k_fold_test_y, model, likelihood)
             print(f"Result evaluation {j+1}/{k} for {name}: {cost}.")
             kernel_costs[j] = cost
 
@@ -122,7 +122,7 @@ def k_fold_cross_validation(x_train, y_train, x_train_AREA, k):
 
     # Print all costs and get name of best kernel
     print(all_costs)
-    print(min(mean_costs, key=mean_costs.get))
+    print(f"The best is {min(mean_costs, key=mean_costs.get)}.")
 
 
 if __name__ == "__main__":
@@ -135,7 +135,7 @@ if __name__ == "__main__":
     train_x_2D, train_x_AREA, test_x_2D, test_x_AREA = extract_city_area_information(train_x, test_x)
 
     # Subsample train set using k means
-    indeces, train_x, train_y = cluster_data(train_y, train_x_2D, k=3000, plot=False)
+    indeces, train_x, train_y = cluster_data(train_y, train_x_2D, k=4500, plot=False)
     # Fit the model
     print('Cross validation on kernels...')
-    k_fold_cross_validation(train_x, train_y, train_x_AREA[indeces], 5)
+    k_fold_cross_validation(train_x, train_y, train_x_AREA[indeces], 3)
