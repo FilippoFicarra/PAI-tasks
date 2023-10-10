@@ -1,9 +1,9 @@
 import os
 import typing
-
+import time
 import torch
 from gpytorch.models import ExactGP
-from gpytorch.kernels import ScaleKernel, MaternKernel, LinearKernel
+from gpytorch.kernels import ScaleKernel, MaternKernel, LinearKernel, RBFKernel
 from gpytorch.means import ConstantMean
 from gpytorch.distributions import MultivariateNormal
 from gpytorch.likelihoods import GaussianLikelihood
@@ -23,7 +23,7 @@ EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluatio
 COST_W_UNDERPREDICT = 50.0
 COST_W_NORMAL = 1.0
 
-ADJ_FACTOR_AREA_1 = 1.21
+ADJ_FACTOR_AREA_1 = 1.55
 TRAINING_ITERATIONS = 1000
 
 
@@ -41,7 +41,7 @@ def plot_data(x: np.ndarray, y: np.ndarray):
     plt.show()
 
 
-def cluster_data(train_y: np.ndarray, train_x_2D: np.ndarray, k: int = 1500, plot=True):
+def cluster_data(train_y: np.ndarray, train_x_2D: np.ndarray, k: int = 5000, plot=True):
     """
     Clusterize data in order to train the Gaussian process with less and
     representative data
@@ -172,7 +172,7 @@ class ExactGPModel(ExactGP):
     def __init__(self, train_x, train_y, likelihood):
         super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
         self.mean_module = ConstantMean()
-        self.covar_module = ScaleKernel(MaternKernel()) + LinearKernel()
+        self.covar_module = ScaleKernel(MaternKernel() + MaternKernel() + MaternKernel())
 
     def forward(self, x):
         mean_x = self.mean_module(x)
@@ -192,8 +192,11 @@ class Model(object):
         Initialize your model here.
         We already provide a random number generator for reproducibility.
         """
-        self.likelihood = None
-        self.model = None
+        self.likelihood_0 = None
+        self.model_0 = None
+        self.likelihood_1 = None
+        self.model_1 = None
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> (
             typing.Tuple)[np.ndarray, np.ndarray, np.ndarray]:
@@ -206,28 +209,97 @@ class Model(object):
             containing your predictions, the GP posterior mean, and the GP posterior stddev (in that order)
         """
         # Create tensor
-        test_x_2D = torch.tensor(test_x_2D, dtype=torch.float32)
+        test_x_2D = torch.tensor(test_x_2D, dtype=torch.float32).to(self.device)
+        test_x_AREA = torch.tensor(test_x_AREA, dtype=torch.float32).to(self.device)
 
-        self.model.eval()
-        self.likelihood.eval()
+
+        indices_test_0 = torch.nonzero(test_x_AREA == False).to(self.device)
+        indices_test_1 = torch.nonzero(test_x_AREA == True).to(self.device)
+
+        test_x_2D_0 = test_x_2D[indices_test_0]
+        test_x_2D_1 = test_x_2D[indices_test_1]
+
+        # Make predictions
+        self.model_0.to(self.device)
+        self.likelihood_0.to(self.device)
+        # First model
+        self.model_0.eval()
+        self.likelihood_0.eval()
 
         with torch.no_grad():
-            f_preds = self.model(test_x_2D)
-            gp_mean = f_preds.mean.numpy()
-            gp_std = torch.sqrt(f_preds.variance).numpy()
+            f_pred_0 = self.model_0(test_x_2D_0)
+            gp_mean_0 = f_pred_0.mean.cpu().numpy()
+            gp_std_0 = torch.sqrt(f_pred_0.variance).cpu().numpy()
 
-        predictions = gp_mean
+        predictions_0 = gp_mean_0
 
-        # Adjust predictions
-        for i in range(test_x_AREA.shape[0]):
-            if test_x_AREA[i]:
-                # Adjust prediction by shifting it by a value proportional to the standard deviation
-                predictions[i] += ADJ_FACTOR_AREA_1 * gp_std[i]
 
-        # Plot predictions
-        plot_data(test_x_2D.numpy(), predictions)
+        self.model_1.to(self.device)
+        self.likelihood_1.to(self.device)
 
+        self.model_1.eval()
+        self.likelihood_1.eval()
+
+        with torch.no_grad():
+            f_pred_1 = self.model_1(test_x_2D_1)
+            gp_mean_1 = f_pred_1.mean.cpu().numpy()
+            gp_std_1 = torch.sqrt(f_pred_1.variance).cpu().numpy()
+
+        predictions_1 = gp_mean_1
+
+        for i in range(len(predictions_1)):
+            predictions_1[i] += ADJ_FACTOR_AREA_1 * gp_std_1[i]
+        
+        predictions = np.zeros(test_x_2D.shape[0], dtype=float)
+        gp_mean = np.zeros(test_x_2D.shape[0], dtype=float)
+        gp_std = np.zeros(test_x_2D.shape[0], dtype=float)
+
+
+        for i, index in enumerate(indices_test_0.tolist()):
+            predictions[index] = predictions_0[i]
+            gp_mean[index] = gp_mean_0[i]
+            gp_std[index] = gp_std_0[i]
+        
+        for i, index in enumerate(indices_test_1.tolist()):
+            predictions[index] = predictions_1[i]
+            gp_mean[index] = gp_mean_1[i]
+            gp_std[index] = gp_std_1[i]
+        
         return predictions, gp_mean, gp_std
+    
+    def train(self, model, likelihood, x_train, train_y, model_idx):
+        # Set model and likelihood for training
+        print(f"Start training model_{model_idx}")
+
+        model.to(self.device)
+        likelihood.to(self.device)
+
+        model.train()
+        likelihood.train()
+
+        # Use the adam optimizer
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.25)
+
+        # "Loss" for GPs - the marginal log likelihood
+        mll = ExactMarginalLogLikelihood(likelihood, model)
+
+        start_time = time.time()
+
+        for i in range(TRAINING_ITERATIONS):
+            # Zero gradients from previous iteration
+            optimizer.zero_grad()
+            # Output from model
+            output = model(x_train)
+            # Calc loss and backprop gradients
+            loss = -mll(output, train_y)
+            loss.backward()
+            if (i+1) % 50 == 0:
+                print(
+                    f"Iter {i + 1}/{TRAINING_ITERATIONS} - Loss: {loss.item()}  noise: {model.likelihood.noise.item()}")
+            optimizer.step()
+
+        end_time = time.time()
+        print(f"Training model_{model_idx} took {end_time - start_time:.2f} seconds.")
 
     def fitting_model(self, train_y: np.ndarray, train_x_2D: np.ndarray):
         """
@@ -235,52 +307,41 @@ class Model(object):
         :param train_x_2D: Training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
         :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES)
         """
+        print("Start fitting the model")
 
-        _, x_train, train_y = cluster_data(train_y, train_x_2D, k=5000, plot=False)
+        areas = determine_city_area_idx(train_x_2D)
 
-        # Create tensors
-        x_train = torch.tensor(x_train, dtype=torch.float32)
-        train_y = torch.tensor(train_y, dtype=torch.float32)
+        # Start training first model
+        x_train_0 = train_x_2D[areas == 0]
+        train_y_0 = train_y[areas == 0]
 
-        # Define likelihood and model
-        self.likelihood = GaussianLikelihood()
-        self.model = ExactGPModel(x_train, train_y, self.likelihood)
+        # _, x_train_0, train_y_0 = cluster_data(train_y_0, x_train_0, k=8000, plot=False)
 
-        # Set model and likelihood for training
-        self.model.train()
-        self.likelihood.train()
 
-        # Use the adam optimizer
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.25)
+        x_train_0 = torch.tensor(x_train_0, dtype=torch.float32).to(self.device)
+        train_y_0 = torch.tensor(train_y_0, dtype=torch.float32).to(self.device)
 
-        # "Loss" for GPs - the marginal log likelihood
-        mll = ExactMarginalLogLikelihood(self.likelihood, self.model)
+        self.likelihood_0 = GaussianLikelihood()
+        self.model_0 = ExactGPModel(x_train_0, train_y_0, self.likelihood_0)
 
-        print("Model hyperparameters before training.")
-        print(f"Matern: length_scale - {self.model.covar_module.kernels[0].base_kernel.lengthscale.item()},"
-              f" nu - {self.model.covar_module.kernels[0].base_kernel.nu}."
-              f" Linear: variance - {self.model.covar_module.kernels[1].variance.item()}."
-              f"Scale: {self.model.covar_module.kernels[0].outputscale.item()}")
+        self.train(self.model_0, self.likelihood_0, x_train_0, train_y_0, 0)
 
-        for i in range(TRAINING_ITERATIONS):
-            # Zero gradients from previous iteration
-            optimizer.zero_grad()
-            # Output from model
-            output = self.model(x_train)
-            # Calc loss and backprop gradients
-            loss = -mll(output, train_y)
-            loss.backward()
-            if (i+1) % 50 == 0:
-                print(
-                    f"Iter {i + 1}/{TRAINING_ITERATIONS} - Loss: {loss.item()}  noise: {self.model.likelihood.noise.item()}")
-            optimizer.step()
 
-        # Print model hyperparameters
-        print("Model hyperparameters after training.")
-        print(f"Matern: length_scale - {self.model.covar_module.kernels[0].base_kernel.lengthscale.item()},"
-              f" nu - {self.model.covar_module.kernels[0].base_kernel.nu}."
-              f" Linear: variance - {self.model.covar_module.kernels[1].variance.item()}."
-              f" Scale: {self.model.covar_module.kernels[0].outputscale.item()}")
+        # Start training second model
+        x_train_1 = train_x_2D[areas == 1]
+        train_y_1 = train_y[areas == 1]
+
+        # _, x_train_1, train_y_1 = cluster_data(train_y_1, x_train_1, k=8000, plot=False)
+
+
+        x_train_1 = torch.tensor(x_train_1, dtype=torch.float32).to(self.device)
+        train_y_1 = torch.tensor(train_y_1, dtype=torch.float32).to(self.device)
+
+        self.likelihood_1 = GaussianLikelihood()
+        self.model_1 = ExactGPModel(x_train_1, train_y_1, self.likelihood_1)
+
+        self.train(self.model_1, self.likelihood_1, x_train_1, train_y_1, 1)
+
 
 
 def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
@@ -328,15 +389,18 @@ def main():
 
     # Extract the city_area information
     train_x_2D, train_x_AREA, test_x_2D, test_x_AREA = extract_city_area_information(train_x, test_x)
+
     # Fit the model
     print('Fitting model')
     model = Model()
+
     model.fitting_model(train_y, train_x_2D)
+
 
     # Predict on the test features
     print('Predicting on test features')
     predictions = model.make_predictions(test_x_2D, test_x_AREA)
-    print(predictions)
+    # print(predictions)
 
     if EXTENDED_EVALUATION:
         perform_extended_evaluation(model, output_dir='.')
