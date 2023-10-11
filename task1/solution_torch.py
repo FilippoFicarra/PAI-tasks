@@ -1,35 +1,42 @@
 import os
-import typing
 import time
-import torch
-from gpytorch.models import ExactGP
-from gpytorch.kernels import ScaleKernel, MaternKernel, LinearKernel, RBFKernel
-from gpytorch.means import ConstantMean
-from gpytorch.distributions import MultivariateNormal
-from gpytorch.likelihoods import GaussianLikelihood
-from gpytorch.mlls import ExactMarginalLogLikelihood
-import numpy as np
+import typing
 
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from gpytorch.distributions import MultivariateNormal
+from gpytorch.kernels import ScaleKernel, MaternKernel
+from gpytorch.likelihoods import GaussianLikelihood
+from gpytorch.means import ConstantMean
+from gpytorch.mlls import ExactMarginalLogLikelihood
+from gpytorch.models import ExactGP
 from matplotlib import cm
 from sklearn.cluster import KMeans
 
-# Variables
+# Variables.
 # Set `EXTENDED_EVALUATION` to `True` in order to visualize your predictions.
 EXTENDED_EVALUATION = False
-EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluation
+EVALUATION_GRID_POINTS = 300
 
-# Cost function constants
+# Cost function constants.
 COST_W_UNDERPREDICT = 50.0
 COST_W_NORMAL = 1.0
 
 ADJ_FACTOR_AREA_1 = 1.55
 TRAINING_ITERATIONS = 1000
+NUM_SAMPLES = 9000
 
 
-# Functions
+# Functions.
 def plot_data(x: np.ndarray, y: np.ndarray):
-    # Plot predictions
+    """
+    Generate scatter plot of data.
+    @param x: 2D coordinates of point.
+    @param y: y values.
+    """
+
+    # Plot.
     plt.figure(figsize=(20, 20))
     range_y = (np.min(y), np.max(y))
     y_0_1 = (y - np.min(y)) / (np.max(y) - np.min(y))
@@ -41,11 +48,16 @@ def plot_data(x: np.ndarray, y: np.ndarray):
     plt.show()
 
 
-def cluster_data(train_y: np.ndarray, train_x_2D: np.ndarray, k: int = 5000, plot=True):
+def cluster_data(train_x_2D: np.ndarray, train_y: np.ndarray, k: int = 5000, plot=True):
     """
-    Clusterize data in order to train the Gaussian process with less and
-    representative data
+    Clusterize data to reduce training size.
+    @param train_x_2D: training data.
+    @param train_y: training labels.
+    @param k: number of samples returned.
+    @param plot: bool to control plotting of samples distribution.
+    @return: new indeces, new training set and set of training labels, in this order.
     """
+
     kmeans = KMeans(n_clusters=k, random_state=0, n_init="auto")
     kmeans.fit(train_x_2D, train_y)
 
@@ -74,46 +86,46 @@ def cluster_data(train_y: np.ndarray, train_x_2D: np.ndarray, k: int = 5000, plo
 
 def cost_function(ground_truth: np.ndarray, predictions: np.ndarray, AREA_idxs: np.ndarray) -> float:
     """
-    Calculates the cost of a set of predictions.
-
-    :param ground_truth: Ground truth pollution levels as a 1d NumPy float array
-    :param predictions: Predicted pollution levels as a 1d NumPy float array
-    :param AREA_idxs: city_area info for every sample in a form of a bool array (NUM_SAMPLES,)
-    :return: Total cost of all predictions as a single float
+    Calculate the cost of a set of predictions.
+    @param ground_truth: ground truth pollution levels as a 1d NumPy float array.
+    @param predictions: predicted pollution levels as a 1d NumPy float array.
+    @param AREA_idxs: city_area info for every sample in a form of a bool array (NUM_SAMPLES,).
+    @return: total cost of all predictions as a single float.
     """
+
     assert ground_truth.ndim == 1 and predictions.ndim == 1 and ground_truth.shape == predictions.shape
 
-    # Unweighted cost
+    # Unweighted cost.
     cost = (ground_truth - predictions) ** 2
     weights = np.ones_like(cost) * COST_W_NORMAL
 
-    # Case i): underprediction
+    # Case i): underprediction.
     mask = (predictions < ground_truth) & [bool(AREA_idx) for AREA_idx in AREA_idxs]
     weights[mask] = COST_W_UNDERPREDICT
 
-    # Weigh the cost and return the average
+    # Weigh the cost and return the average.
     return np.mean(cost * weights)
 
 
-# You don't have to change this function
 def is_in_circle(coor, circle_coor):
     """
-    Checks if a coordinate is inside a circle.
-    :param coor: 2D coordinate
-    :param circle_coor: 3D coordinate of the circle center and its radius
-    :return: True if the coordinate is inside the circle, False otherwise
+    Check if a coordinate is inside a circle.
+    @param coor: 2D coordinate.
+    @param circle_coor: 3D coordinate of the circle center and its radius.
+    @return:  True if the coordinate is inside the circle, False otherwise.
     """
+
     return (coor[0] - circle_coor[0]) ** 2 + (coor[1] - circle_coor[1]) ** 2 < circle_coor[2] ** 2
 
 
-# You don't have to change this function
 def determine_city_area_idx(visualization_xs_2D):
     """
-    Determines the city_area index for each coordinate in the visualization grid.
-    :param visualization_xs_2D: 2D coordinates of the visualization grid
-    :return: 1D array of city_area indexes
+    Determine the city_area index for each coordinate in the visualization grid.
+    @param visualization_xs_2D: 2D coordinates of the visualization grid.
+    @return: 1D array of city_area indexes.
     """
-    # Circles coordinates
+
+    # Circles coordinates.
     circles = np.array([[0.5488135, 0.71518937, 0.17167342],
                         [0.79915856, 0.46147936, 0.1567626],
                         [0.26455561, 0.77423369, 0.10298338],
@@ -138,18 +150,16 @@ def determine_city_area_idx(visualization_xs_2D):
     return visualization_xs_AREA
 
 
-# You don't have to change this function
-
-
 def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> (
         typing.Tuple)[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Extracts the city_area information from the training and test features.
-    :param train_x: Training features
-    :param test_x: Test features
-    :return: Tuple of (training features' 2D coordinates, training features' city_area information,
-        test features' 2D coordinates, test features' city_area information)
+    Extract the city_area information from the training and test features.
+    @param train_x: training features.
+    @param test_x: test features.
+    @return: tuple of (training features' 2D coordinates, training features' city_area information, test features' 2D
+    coordinates, test features' city_area information)
     """
+
     train_x_2D = np.zeros((train_x.shape[0], 2), dtype=float)
     train_x_AREA = np.zeros((train_x.shape[0],), dtype=bool)
     test_x_2D = np.zeros((test_x.shape[0], 2), dtype=float)
@@ -169,6 +179,10 @@ def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> (
 
 
 class ExactGPModel(ExactGP):
+    """
+    Class for GP Regressor.
+    """
+
     def __init__(self, train_x, train_y, likelihood):
         super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
         self.mean_module = ConstantMean()
@@ -179,50 +193,55 @@ class ExactGPModel(ExactGP):
         covar_x = self.covar_module(x)
         return MultivariateNormal(mean_x, covar_x)
 
+    def change_kernel(self, kernel):
+        self.covar_module = kernel
+
 
 class Model(object):
     """
-    Model for this task.
-    You need to implement the fit_model and predict methods
-    without changing their signatures, but are allowed to create additional methods.
+    Class for model for GP regression.
     """
 
     def __init__(self):
-        """
-        Initialize your model here.
-        We already provide a random number generator for reproducibility.
-        """
+        # First model for area 0.
         self.likelihood_0 = None
         self.model_0 = None
+
+        # Second model for area 1.
         self.likelihood_1 = None
         self.model_1 = None
+
+        # Device.
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> (
             typing.Tuple)[np.ndarray, np.ndarray, np.ndarray]:
         """
         Predict the pollution concentration for a given set of city_areas.
-        :param test_x_2D: city_areas as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
-        :param test_x_AREA: city_area info for every sample in a form of a bool array (NUM_SAMPLES)
-        :return:
-            Tuple of three 1d NumPy float arrays, each of shape (NUM_SAMPLES,),
-            containing your predictions, the GP posterior mean, and the GP posterior stddev (in that order)
+        @param test_x_2D: city_areas as a 2d NumPy float array of shape (NUM_SAMPLES, 2).
+        @param test_x_AREA: city_area info for every sample in a form of a bool array (NUM_SAMPLES,).
+        @return: Tuple of three 1d NumPy float arrays, each of shape (NUM_SAMPLES,), containing the predictions,
+         the GP posterior mean, and the GP posterior stdandard deviation (in that order).
         """
-        # Create tensor
+
+        print('Predicting on test features.')
+
+        # Create tensor.
         test_x_2D = torch.tensor(test_x_2D, dtype=torch.float32).to(self.device)
         test_x_AREA = torch.tensor(test_x_AREA, dtype=torch.float32).to(self.device)
 
-
+        # Find indeces of samples in area 0 and 1.
         indices_test_0 = torch.nonzero(test_x_AREA == False).to(self.device)
         indices_test_1 = torch.nonzero(test_x_AREA == True).to(self.device)
 
+        # Separate test data accordingly.
         test_x_2D_0 = test_x_2D[indices_test_0]
         test_x_2D_1 = test_x_2D[indices_test_1]
 
-        # Make predictions
+        # Make predictions for first model.
         self.model_0.to(self.device)
         self.likelihood_0.to(self.device)
-        # First model
+
         self.model_0.eval()
         self.likelihood_0.eval()
 
@@ -233,7 +252,7 @@ class Model(object):
 
         predictions_0 = gp_mean_0
 
-
+        # Make predictions for second model.
         self.model_1.to(self.device)
         self.likelihood_1.to(self.device)
 
@@ -249,108 +268,124 @@ class Model(object):
 
         for i in range(len(predictions_1)):
             predictions_1[i] += ADJ_FACTOR_AREA_1 * gp_std_1[i]
-        
+
+        # Create new arrays of predictions, mean and standard deviation with ordered elements, then return everything.
         predictions = np.zeros(test_x_2D.shape[0], dtype=float)
         gp_mean = np.zeros(test_x_2D.shape[0], dtype=float)
         gp_std = np.zeros(test_x_2D.shape[0], dtype=float)
-
 
         for i, index in enumerate(indices_test_0.tolist()):
             predictions[index] = predictions_0[i]
             gp_mean[index] = gp_mean_0[i]
             gp_std[index] = gp_std_0[i]
-        
+
         for i, index in enumerate(indices_test_1.tolist()):
             predictions[index] = predictions_1[i]
             gp_mean[index] = gp_mean_1[i]
             gp_std[index] = gp_std_1[i]
-        
-        return predictions, gp_mean, gp_std
-    
-    def train(self, model, likelihood, x_train, train_y, model_idx):
-        # Set model and likelihood for training
-        print(f"Start training model_{model_idx}")
 
+        return predictions, gp_mean, gp_std
+
+    def train_submodel(self, model, likelihood, x_train, y_train):
+        """
+        Train a model using negative marginal log-likelihood as objective.
+        @param model: the model to train.
+        @param likelihood: the likelihood function. For GPR, the Gaussian likelihood.
+        @param x_train: the training samples, already sent to the appropriate device.
+        @param y_train: the lables, already sent to the appropriate device.
+        """
+
+        # Send model to device.
         model.to(self.device)
         likelihood.to(self.device)
 
+        # Set model and likelihhod for training.
         model.train()
         likelihood.train()
 
-        # Use the adam optimizer
+        # Use the adam optimizer.
         optimizer = torch.optim.Adam(model.parameters(), lr=0.25)
 
-        # "Loss" for GPs - the marginal log likelihood
+        # "Loss" for GPs - the marginal log likelihood.
         mll = ExactMarginalLogLikelihood(likelihood, model)
 
         start_time = time.time()
 
         for i in range(TRAINING_ITERATIONS):
-            # Zero gradients from previous iteration
+            # Zero gradients from previous iteration.
             optimizer.zero_grad()
             # Output from model
             output = model(x_train)
-            # Calc loss and backprop gradients
-            loss = -mll(output, train_y)
+            # Calc loss and backprop gradients.
+            loss = -mll(output, y_train)
             loss.backward()
-            if (i+1) % 50 == 0:
+            if (i + 1) % 50 == 0:
                 print(
                     f"Iter {i + 1}/{TRAINING_ITERATIONS} - Loss: {loss.item()}  noise: {model.likelihood.noise.item()}")
             optimizer.step()
 
         end_time = time.time()
-        print(f"Training model_{model_idx} took {end_time - start_time:.2f} seconds.")
+        print(f"Training took {end_time - start_time:.2f} seconds.")
 
-    def fitting_model(self, train_y: np.ndarray, train_x_2D: np.ndarray):
+    def fitting_model(self, train_y: np.ndarray, train_x_2D: np.ndarray,):
         """
-        Fit your model on the given training data.
-        :param train_x_2D: Training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
-        :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES)
+        Fit model on the given training data.
+        @param train_y: raining pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES,).
+        @param train_x_2D: training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2).
         """
-        print("Start fitting the model")
 
-        areas = determine_city_area_idx(train_x_2D)
+        print("Start fitting the model.")
 
-        # Start training first model
-        x_train_0 = train_x_2D[areas == 0]
-        train_y_0 = train_y[areas == 0]
+        # Get area id information. We cannot pass it as argument for compatibility issues
+        # (the signature of the method cannot change).
+        train_x_AREA = determine_city_area_idx(train_x_2D)
+        train_x_AREA = train_x_AREA == 1.
 
-        # _, x_train_0, train_y_0 = cluster_data(train_y_0, x_train_0, k=8000, plot=False)
+        # Extract training data for area id 0.
+        x_train_0 = train_x_2D[train_x_AREA == False]
+        y_train_0 = train_y[train_x_AREA == False]
 
+        # _, x_train_0, y_train_0 = cluster_data(x_train_0, y_train_0, k=NUM_SAMPLES, plot=False)
 
+        # Create tensors.
         x_train_0 = torch.tensor(x_train_0, dtype=torch.float32).to(self.device)
-        train_y_0 = torch.tensor(train_y_0, dtype=torch.float32).to(self.device)
+        y_train_0 = torch.tensor(y_train_0, dtype=torch.float32).to(self.device)
 
+        # Create likelihood and model.
         self.likelihood_0 = GaussianLikelihood()
-        self.model_0 = ExactGPModel(x_train_0, train_y_0, self.likelihood_0)
+        self.model_0 = ExactGPModel(x_train_0, y_train_0, self.likelihood_0)
 
-        self.train(self.model_0, self.likelihood_0, x_train_0, train_y_0, 0)
+        # Train model 0.
+        print(f"Start training model for area 0...")
+        self.train_submodel(self.model_0, self.likelihood_0, x_train_0, y_train_0)
 
+        # Extract training data for area id 1.
+        x_train_1 = train_x_2D[train_x_AREA == True]
+        y_train_1 = train_y[train_x_AREA == True]
 
-        # Start training second model
-        x_train_1 = train_x_2D[areas == 1]
-        train_y_1 = train_y[areas == 1]
+        # _, x_train_1, y_train_1 = cluster_data(x_train_1, y_train_1, k=NUM_SAMPLES, plot=False)
 
-        # _, x_train_1, train_y_1 = cluster_data(train_y_1, x_train_1, k=8000, plot=False)
-
-
+        # Create tensors.
         x_train_1 = torch.tensor(x_train_1, dtype=torch.float32).to(self.device)
-        train_y_1 = torch.tensor(train_y_1, dtype=torch.float32).to(self.device)
+        y_train_1 = torch.tensor(y_train_1, dtype=torch.float32).to(self.device)
 
+        # Create likelihood and model.
         self.likelihood_1 = GaussianLikelihood()
-        self.model_1 = ExactGPModel(x_train_1, train_y_1, self.likelihood_1)
+        self.model_1 = ExactGPModel(x_train_1, y_train_1, self.likelihood_1)
 
-        self.train(self.model_1, self.likelihood_1, x_train_1, train_y_1, 1)
-
+        # Train model 1.
+        print(f"Start training model for area 1...")
+        self.train_submodel(self.model_1, self.likelihood_1, x_train_1, y_train_1)
 
 
 def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
     """
-    Visualizes the predictions of a fitted model.
-    :param model: Fitted model to be visualized
-    :param output_dir: Directory in which the visualizations will be stored
+    Visualize the predictions of a fitted model.
+    @param model: fitted model to be visualized.
+    @param output_dir: directory in which the visualizations will be stored.
     """
-    print('Performing extended evaluation')
+
+    print('Performing extended evaluation...')
 
     # Visualize on a uniform grid over the entire coordinate system
     grid_lat, grid_lon = np.meshgrid(
@@ -369,36 +404,32 @@ def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
 
     # Plot the actual predictions
     fig, ax = plt.subplots()
-    ax.set_title('Extended visualization of task 1')
+    ax.set_title('Extended visualization of task 1.')
     im = ax.imshow(predictions, vmin=vmin, vmax=vmax)
     cbar = fig.colorbar(im, ax=ax)
 
     # Save figure to pdf
     figure_path = os.path.join(output_dir, 'extended_evaluation.pdf')
     fig.savefig(figure_path)
-    print(f'Saved extended evaluation to {figure_path}')
+    print(f'Saved extended evaluation to {figure_path}.')
 
     plt.show()
 
 
 def main():
-    # Load the training dateset and test features
+    # Load the training dateset and test features.
     train_x = np.loadtxt('train_x.csv', delimiter=',', skiprows=1)
     train_y = np.loadtxt('train_y.csv', delimiter=',', skiprows=1)
     test_x = np.loadtxt('test_x.csv', delimiter=',', skiprows=1)
 
-    # Extract the city_area information
-    train_x_2D, train_x_AREA, test_x_2D, test_x_AREA = extract_city_area_information(train_x, test_x)
+    # Extract the city_area information.
+    train_x_2D, _, test_x_2D, test_x_AREA = extract_city_area_information(train_x, test_x)
 
-    # Fit the model
-    print('Fitting model')
+    # Fit the model.
     model = Model()
-
     model.fitting_model(train_y, train_x_2D)
 
-
-    # Predict on the test features
-    print('Predicting on test features')
+    # Predict on the test features.
     predictions = model.make_predictions(test_x_2D, test_x_AREA)
     # print(predictions)
 
