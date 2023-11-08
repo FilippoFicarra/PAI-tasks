@@ -4,3 +4,10 @@ venv
 .DS_Store
 task1/clustering.py
 \__pycache__
+task2/test_xs.npz
+task2/test_ys.bytes
+task2/train_xs.npz
+task2/train_ys.npz
+task2/val_xs.npz
+task2/val_ys.npz
+task2/map_weights.pt
