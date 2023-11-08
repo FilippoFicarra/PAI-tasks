@@ -28,6 +28,8 @@ this solution always performs MAP inference before running your SWAG implementat
 Note that MAP inference can take a long time.
 """
 
+CLAMP_VALUE = 1e-30
+
 
 def main():
     data_dir = pathlib.Path.cwd()
@@ -64,10 +66,12 @@ def main():
         train_xs=dataset_train.tensors[0],
         model_dir=model_dir,
     )
+    # Compute mean and covariance of parameters
     swag.fit(train_loader)
+    # Calibrate the threshold based on the validation set
     swag.calibrate(dataset_val)
 
-    # fork_rng ensures that the evaluation does not change the rng state.
+    # The method fork_rng ensures that the evaluation does not change the rng state.
     # That way, you should get exactly the same results even if you remove evaluation
     # to save computational time when developing the task
     # (as long as you ONLY use torch randomness, and not e.g., random or numpy.random).
@@ -145,20 +149,16 @@ class SWAGInference(object):
         Update SWAG statistics with the current weights of self.network.
         """
 
-        # Create a copy of the current network weights
-        current_params = {name: param.detach() for name, param in self.network.named_parameters()}
-
         # SWAG-diagonal.
         # This for loop is performed for both diagonal SWAG and full SWAG, and it initializes the values
         # of the parameters.
-        for name, param in current_params.items():
+        for name, param in self.network.named_parameters():
             self.first_moment[name] = param
             self.second_moment[name] = torch.square(param).detach()
-            self.diag_cov[name] = param
 
         # Full SWAG
         if self.inference_mode == InferenceMode.SWAG_FULL:
-            self.D = collections.deque(self.deviation_matrix_max_rank)
+            self.D = collections.deque(maxlen=self.deviation_matrix_max_rank)
 
     def fit_swag(self, loader: torch.utils.data.DataLoader) -> None:
         """
@@ -217,23 +217,24 @@ class SWAGInference(object):
                     pbar_dict["avg. epoch accuracy"] = average_accuracy
                     pbar.set_postfix(pbar_dict)
 
-                if epoch % self.swag_update_freq == 0:
+                if (epoch + 1) % self.swag_update_freq == 0:
                     # Update moments
-                    n = epoch / self.swag_update_freq
-                    current_params = {name: param.detach() for name, param in self.network.named_parameters()}
+                    n = (epoch + 1) / self.swag_update_freq
                     append_value = {}
-                    for name, param in current_params.items():
-                        self.first_moment[name] = (1 / n + 1) * (n * self.first_moment[name] + param)
-                        self.second_moment[name] = (1 / n + 1) * (n * self.second_moment[name] + torch.square(param))
-                        append_value[name] = param - self.first_moment[name]
+                    for name, param in self.network.named_parameters():
+                        self.first_moment[name] = ((1 / (n + 1)) * (n * self.first_moment[name] + param)).detach()
+                        self.second_moment[name] = ((1 / (n + 1)) * (n * self.second_moment[name]
+                                                                     + torch.square(param))).detach()
+                        append_value[name] = (param - self.first_moment[name]).detach()
 
                     # The first value inserted is removed if the current size of the queue is equal to the rank
                     # constraint
                     self.D.append(append_value)
 
         # Save diagonal covariance matrix
-        for name, param in self.second_moment.items():
-            self.diag_cov[name] = self.second_moment[name] - torch.square(self.first_moment[name])
+        for name, param in self.network.named_parameters():
+            self.diag_cov[name] = torch.clamp(self.second_moment[name] - torch.square(self.first_moment[name]),
+                                              CLAMP_VALUE).detach()
 
     def calibrate(self, validation_data: torch.utils.data.Dataset) -> None:
         """
@@ -242,7 +243,7 @@ class SWAGInference(object):
         where you can identify the latter by having label -1.
         """
         if self.inference_mode == InferenceMode.MAP:
-            # In MAP mode, simply predict argmax and do nothing else
+            # In MAP mode, predict argmax and do nothing else
             self._prediction_threshold = 0.0
             return
 
@@ -281,10 +282,10 @@ class SWAGInference(object):
             output = None
             for batch_xs in loader:
                 if output is None:
-                    output = self.network(batch_xs).detach()
+                    output = self.network(batch_xs[0]).detach()
                 else:
-                    output = torch.vstack((output, self.network(batch_xs))).detach()
-            self._update_batchnorm()
+                    output = torch.vstack((output, self.network(batch_xs[0]))).detach()
+
             per_model_sample_predictions.append(output)
 
         assert len(per_model_sample_predictions) == self.bma_samples
@@ -307,6 +308,10 @@ class SWAGInference(object):
         Hence, after calling this method, self.network corresponds to a new posterior sample.
         """
 
+        # Define multiplicative factor and sample z2 associated with the contribution of the deviation matrix.
+        z_2 = torch.normal(torch.zeros(self.deviation_matrix_max_rank))
+        mult_factor = (1 / math.sqrt(2 * (self.deviation_matrix_max_rank - 1)))
+
         # Instead of acting on a full vector of parameters, all operations can be done on per-layer parameters.
         for name, param in self.network.named_parameters():
             # SWAG-diagonal part
@@ -320,21 +325,14 @@ class SWAGInference(object):
 
             # Full SWAG part
             if self.inference_mode == InferenceMode.SWAG_FULL:
-                # Get a sample from a standard gaussian of size equal to the rank constraint
-                z_2 = torch.normal(torch.zeros(self.deviation_matrix_max_rank))
-                mult_factor = (1 / math.sqrt(2 * (self.deviation_matrix_max_rank - 1)))
-                additional_std = torch.zeros_like(sampled_param)
                 for i in range(self.deviation_matrix_max_rank):
-                    additional_std += mult_factor * self.D[i][name] * z_2[i]
-
-                sampled_param += additional_std
+                    sampled_param += mult_factor * self.D[i][name] * z_2[i]
 
             # Modify weight value in-place; directly changing self.network
             param.data = sampled_param
 
-        # TODO(1): Don't forget to update batch normalization statistics using self._update_batchnorm()
-        #  in the appropriate place!
-        raise NotImplementedError("Update batch normalization statistics for newly sampled network")
+        # TODO check if this is the correct place for performing batch normalization
+        self._update_batchnorm()
 
     def predict_labels(self, predicted_probabilities: torch.Tensor) -> torch.Tensor:
         """
@@ -612,8 +610,6 @@ def evaluate(
     :param extended_evaluation: If True, generates additional plots
     :param output_dir: Directory where extended evaluation plots are saved
     """
-
-    print("Evaluating model on validation data")
 
     # We ignore is_snow and is_cloud here, but feel free to use them as well
     xs, is_snow, is_cloud, ys = eval_dataset.tensors
