@@ -30,14 +30,6 @@ Note that MAP inference can take a long time.
 
 
 def main():
-    raise RuntimeError(
-        "This main() method is for illustrative purposes only"
-        " and will NEVER be called when running your solution to generate your submission file!\n"
-        "The checker always directly interacts with your SWAGInference class and evaluate method.\n"
-        "You can remove this exception for local testing, but be aware that any changes to the main() method"
-        " are ignored when generating your submission file."
-    )
-
     data_dir = pathlib.Path.cwd()
     model_dir = pathlib.Path.cwd()
     output_dir = pathlib.Path.cwd()
@@ -96,14 +88,7 @@ class InferenceMode(enum.Enum):
 
 class SWAGInference(object):
     """
-    Your implementation of SWA-Gaussian.
-    This class is used to run and evaluate your solution.
-    You must preserve all methods and signatures of this class.
-    However, you can add new methods if you want.
-
-    We provide basic functionality and some helper methods.
-    You can pass all baselines by only modifying methods marked with TODO.
-    However, we encourage you to skim other methods in order to gain a better understanding of SWAG.
+    Implementation of SWA-Gaussian.
     """
 
     def __init__(
@@ -143,11 +128,14 @@ class SWAGInference(object):
         # Store training dataset to recalculate batch normalization statistics during SWAG inference
         self.train_dataset = torch.utils.data.TensorDataset(train_xs)
 
-        # SWAG-diagonal
-        self.theta_swa = None
+        # Common parameters
+        self.first_moment = self._create_weight_copy()
+        self.second_moment = self._create_weight_copy()
+
+        # SWAG-diagonal covariance matrix
         self.diag_cov = self._create_weight_copy()
 
-        # Full SWAG
+        # Full SWAG deviation matrix
         self.D = None
 
         # Calibration, prediction, and other attributes
@@ -160,8 +148,12 @@ class SWAGInference(object):
         # Create a copy of the current network weights
         current_params = {name: param.detach() for name, param in self.network.named_parameters()}
 
-        # SWAG-diagonal
+        # SWAG-diagonal.
+        # This for loop is performed for both diagonal SWAG and full SWAG, and it initializes the values
+        # of the parameters.
         for name, param in current_params.items():
+            self.first_moment[name] = param
+            self.second_moment[name] = torch.square(param).detach()
             self.diag_cov[name] = param
 
         # Full SWAG
@@ -195,15 +187,6 @@ class SWAGInference(object):
             epochs=self.swag_epochs,
             steps_per_epoch=len(loader),
         )
-
-        # Get initial weights of networks from MAP estimate
-        self.fit(loader)
-        first_moment = self._create_weight_copy()
-        second_moment = self._create_weight_copy()
-        current_params = {name: param.detach() for name, param in self.network.named_parameters()}
-        for name, param in current_params.items():
-            first_moment[name] = param
-            second_moment[name] = torch.square(param).detach()
 
         self.network.train()
         with tqdm.trange(self.swag_epochs, desc="Running gradient descent for SWA") as pbar:
@@ -240,16 +223,17 @@ class SWAGInference(object):
                     current_params = {name: param.detach() for name, param in self.network.named_parameters()}
                     append_value = {}
                     for name, param in current_params.items():
-                        first_moment[name] = (1 / n + 1) * (n * first_moment[name] + param)
-                        second_moment[name] = (1 / n + 1) * (n * second_moment[name] + torch.square(param))
-                        append_value[name] = param - first_moment[name]
+                        self.first_moment[name] = (1 / n + 1) * (n * self.first_moment[name] + param)
+                        self.second_moment[name] = (1 / n + 1) * (n * self.second_moment[name] + torch.square(param))
+                        append_value[name] = param - self.first_moment[name]
 
+                    # The first value inserted is removed if the current size of the queue is equal to the rank
+                    # constraint
                     self.D.append(append_value)
 
-        # Save return values
-        self.theta_swa = first_moment
-        for name, param in second_moment.items():
-            self.diag_cov[name] = second_moment[name] - torch.square(first_moment[name])
+        # Save diagonal covariance matrix
+        for name, param in self.second_moment.items():
+            self.diag_cov[name] = self.second_moment[name] - torch.square(self.first_moment[name])
 
     def calibrate(self, validation_data: torch.utils.data.Dataset) -> None:
         """
@@ -327,7 +311,7 @@ class SWAGInference(object):
         for name, param in self.network.named_parameters():
             # SWAG-diagonal part
             z_1 = torch.normal(torch.zeros_like(param))
-            current_mean = self.theta_swa[name]
+            current_mean = self.first_moment[name]
             current_std = (1 / math.sqrt(2)) * torch.sqrt(self.diag_cov[name]).detach()
             assert current_mean.size() == param.size() and current_std.size() == param.size()
 
@@ -414,7 +398,7 @@ class SWAGInference(object):
     def fit_map(self, loader: torch.utils.data.DataLoader) -> None:
         """
         MAP inference procedure to obtain initial weights of self.network.
-        This is the exact procedure that was used to obtain the pretrained weights we provide.
+        This is the exact procedure used to obtain the pretrained weights we provide.
         """
         map_epochs = 140
         initial_lr = 0.01
@@ -625,8 +609,8 @@ def evaluate(
     Feel free to change or extend this code.
     :param swag: Trained model to evaluate
     :param eval_dataset: Validation dataset
-    :param: extended_evaluation: If True, generates additional plots
-    :param output_dir: Directory into which extended evaluation plots are saved
+    :param extended_evaluation: If True, generates additional plots
+    :param output_dir: Directory where extended evaluation plots are saved
     """
 
     print("Evaluating model on validation data")
