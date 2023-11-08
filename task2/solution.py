@@ -284,7 +284,7 @@ class SWAGInference(object):
                     output = self.network(batch_xs).detach()
                 else:
                     output = torch.vstack((output, self.network(batch_xs))).detach()
-
+            self._update_batchnorm()
             per_model_sample_predictions.append(output)
 
         assert len(per_model_sample_predictions) == self.bma_samples
