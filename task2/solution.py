@@ -12,7 +12,7 @@ import torch.utils.data
 import tqdm
 from matplotlib import pyplot as plt
 
-from util import draw_reliability_diagram, cost_function, setup_seeds, calc_calibration_curve
+from util import draw_reliability_diagram, cost_function, setup_seeds, calc_calibration_curve, ece
 
 EXTENDED_EVALUATION = False
 """
@@ -29,6 +29,9 @@ Note that MAP inference can take a long time.
 """
 
 CLAMP_VALUE = 1e-30
+device = torch.device("cuda" if torch.backends.mps.is_available() else "cpu")
+
+print("Using device:", device)
 
 
 def main():
@@ -37,19 +40,19 @@ def main():
     output_dir = pathlib.Path.cwd()
 
     # Load training data
-    train_xs = torch.from_numpy(np.load(data_dir / "train_xs.npz")["train_xs"])
+    train_xs = torch.from_numpy(np.load(data_dir / "train_xs.npz")["train_xs"]).to(device)
     raw_train_meta = np.load(data_dir / "train_ys.npz")
-    train_ys = torch.from_numpy(raw_train_meta["train_ys"])
-    train_is_snow = torch.from_numpy(raw_train_meta["train_is_snow"])
-    train_is_cloud = torch.from_numpy(raw_train_meta["train_is_cloud"])
+    train_ys = torch.from_numpy(raw_train_meta["train_ys"]).to(device)
+    train_is_snow = torch.from_numpy(raw_train_meta["train_is_snow"]).to(device)
+    train_is_cloud = torch.from_numpy(raw_train_meta["train_is_cloud"]).to(device)
     dataset_train = torch.utils.data.TensorDataset(train_xs, train_is_snow, train_is_cloud, train_ys)
 
     # Load validation data
-    val_xs = torch.from_numpy(np.load(data_dir / "val_xs.npz")["val_xs"])
+    val_xs = torch.from_numpy(np.load(data_dir / "val_xs.npz")["val_xs"]).to(device)
     raw_val_meta = np.load(data_dir / "val_ys.npz")
-    val_ys = torch.from_numpy(raw_val_meta["val_ys"])
-    val_is_snow = torch.from_numpy(raw_val_meta["val_is_snow"])
-    val_is_cloud = torch.from_numpy(raw_val_meta["val_is_cloud"])
+    val_ys = torch.from_numpy(raw_val_meta["val_ys"]).to(device)
+    val_is_snow = torch.from_numpy(raw_val_meta["val_is_snow"]).to(device)
+    val_is_cloud = torch.from_numpy(raw_val_meta["val_is_cloud"]).to(device)
     dataset_val = torch.utils.data.TensorDataset(val_xs, val_is_snow, val_is_cloud, val_ys)
 
     # Fix all randomness
@@ -75,8 +78,8 @@ def main():
     # That way, you should get exactly the same results even if you remove evaluation
     # to save computational time when developing the task
     # (as long as you ONLY use torch randomness, and not e.g., random or numpy.random).
-    with torch.random.fork_rng():
-        evaluate(swag, dataset_val, EXTENDED_EVALUATION, output_dir)
+    # with torch.random.fork_rng():
+    #     evaluate(swag, dataset_val, EXTENDED_EVALUATION, output_dir)
 
 
 class InferenceMode(enum.Enum):
@@ -128,6 +131,7 @@ class SWAGInference(object):
         # Network used to perform SWAG.
         # Note that all operations in this class modify this network IN-PLACE!
         self.network = CNN(in_channels=3, out_classes=6)
+        self.network.to(device)
 
         # Store training dataset to recalculate batch normalization statistics during SWAG inference
         self.train_dataset = torch.utils.data.TensorDataset(train_xs)
@@ -267,34 +271,47 @@ class SWAGInference(object):
         min_probability_differences = np.arange(0.05, 0.2, 0.05)
         
         # create a list of accuracies for each combination of thresholds and min_probability_differences
-        best_accuracy = 0
-        best_threshold = 0
-        best_min_probability_difference = 0
-        for threshold in thresholds:
-            for min_probability_difference in min_probability_differences:
-                self._prediction_threshold = threshold
-                self._min_probability_difference = min_probability_difference
-                pred_prob_all = self.predict_probabilities(val_xs)
-                # pred_prob_max, pred_ys_argmax = torch.max(pred_prob_all, dim=-1)
-                pred_ys = self.predict_labels(pred_prob_all)
+        # best_cost = float("inf")
+        # best_threshold = 0
+        # best_min_probability_difference = 0
+        # for threshold in thresholds:
+        #     for min_probability_difference in min_probability_differences:
+        #         self._prediction_threshold = threshold
+        #         self._min_probability_difference = min_probability_difference
+        #         pred_prob_all = self.predict_probabilities(val_xs)
+        #         # pred_prob_max, pred_ys_argmax = torch.max(pred_prob_all, dim=-1)
+        #         pred_ys = self.predict_labels(pred_prob_all)
                 
                 
                 
-                nonambiguous_mask = val_ys != -1
+        #         nonambiguous_mask = val_ys != -1
 
-                accuracy = torch.mean((pred_ys[nonambiguous_mask] == val_ys[nonambiguous_mask]).float()).item()
-                print(f"Accuracy (non-ambiguous only, your predictions), threshold {threshold}, min_probability_difference {min_probability_difference}: {accuracy:.4f}")
+        #         accuracy = torch.mean((pred_ys == val_ys).float()).item()
+        #         # accuracy_no_ambiguous = torch.mean((pred_ys[nonambiguous_mask] == val_ys[nonambiguous_mask]).float()).item()
+        #         prediction_cost = cost_function(pred_ys, val_ys).item()
+        #         Ece = ece(pred_prob_all.cpu().numpy(), val_ys.cpu().numpy(), n_bins=20)
+        #         print(f"Ece: {Ece:.4f}")
+        #         cost = prediction_cost + max(0, Ece - 0.1)
                 
-                if accuracy > best_accuracy:
-                    best_accuracy = accuracy
-                    best_threshold = threshold
-                    best_min_probability_difference = min_probability_difference
+        #         print(f"Accuracy, threshold {threshold:.2f}, min_probability_difference {min_probability_difference:.2f}: {accuracy:.4f}")
+        #         print(f"Cost, threshold {threshold:.2f}, min_probability_difference {min_probability_difference:.2f}: {cost:.4f}")
+        #         # print(f"Accuracy (non-ambiguous only, your predictions), threshold {threshold}, min_probability_difference {min_probability_difference}: {accuracy_no_ambiguous:.4f}")
+                
+        #         if cost < best_cost:
+        #             best_cost = cost
+        #             best_threshold = threshold
+        #             best_min_probability_difference = min_probability_difference
                 
                 
-    
-        # set the best values
-        self._prediction_threshold = best_threshold
-        self._min_probability_difference = best_min_probability_difference
+        # print(f"Best cost: {best_cost:.4f}")
+        # print(f"Best threshold: {best_threshold:.2f}")
+        # print(f"Best min_probability_difference: {best_min_probability_difference:.2f}")
+        
+        # # set the best values
+        # self._prediction_threshold = best_threshold
+        # self._min_probability_difference = best_min_probability_difference
+        self._prediction_threshold = 0.4
+        self._min_probability_difference = 0.2
         
 
     def predict_probabilities_swag(self, loader: torch.utils.data.DataLoader) -> torch.Tensor:
@@ -384,26 +401,32 @@ class SWAGInference(object):
         # label_probabilities contains the per-row maximum values in predicted_probabilities,
         # max_likelihood_labels the corresponding column index (equivalent to class).
         label_probabilities, max_likelihood_labels = torch.max(predicted_probabilities, dim=-1)
+        label_probabilities = label_probabilities.to(device)
+        max_likelihood_labels = max_likelihood_labels.to(device)
         num_samples, num_classes = predicted_probabilities.size()
         assert label_probabilities.size() == (num_samples,) and max_likelihood_labels.size() == (num_samples,)
 
         # A model without uncertainty awareness might simply predict the most likely label per sample:
         # return max_likelihood_labels
         
-        differences = label_probabilities.unsqueeze(-1).expand(-1, 6) - predicted_probabilities
-        indices = torch.argmax(predicted_probabilities, dim=-1)
-
+        differences = label_probabilities.unsqueeze(-1).expand(-1, num_classes) - predicted_probabilities
+        indices = torch.argmax(predicted_probabilities, dim=-1).unsqueeze(-1).to(device)
+        
+        mask = torch.ones((num_samples, num_classes), dtype=torch.bool).to(device)
+        mask.scatter_(1, indices, 0)
+        
+        differences = differences[mask].view(num_samples, num_classes-1)
 
         condition = (label_probabilities >= self._prediction_threshold) \
-                    & (torch.all(differences[~indices:] >= self._min_probability_difference, dim=-1))
+                    & (torch.all(differences >= self._min_probability_difference, dim=-1))
                     
         # A bit better: use a threshold to decide whether to return a label or "don't know" (label -1)
         # TODO(2): implement a different decision rule if desired
         return torch.where(
             condition,
             max_likelihood_labels,
-            torch.ones_like(max_likelihood_labels) * -1,
-        )
+            torch.ones_like(max_likelihood_labels).to(device) * -1,
+        ).to(device)
 
     def _create_weight_copy(self) -> typing.Dict[str, torch.Tensor]:
         """Create an all-zero copy of the network weights as a dictionary that maps name -> weight"""
