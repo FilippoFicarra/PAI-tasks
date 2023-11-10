@@ -29,7 +29,7 @@ Note that MAP inference can take a long time.
 """
 
 CLAMP_VALUE = 1e-30
-device = torch.device("cuda" if torch.backends.mps.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("Using device:", device)
 
@@ -452,7 +452,7 @@ class SWAGInference(object):
         # MAP inference to obtain initial weights
         PRETRAINED_WEIGHTS_FILE = self.model_dir / "map_weights.pt"
         if USE_PRETRAINED_INIT:
-            self.network.load_state_dict(torch.load(PRETRAINED_WEIGHTS_FILE))
+            self.network.load_state_dict(torch.load(PRETRAINED_WEIGHTS_FILE, map_location='cpu')).to(device)
             print("Loaded pretrained MAP weights from", PRETRAINED_WEIGHTS_FILE)
         else:
             self.fit_map(loader)
