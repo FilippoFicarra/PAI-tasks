@@ -295,8 +295,9 @@ class SWAGInference(object):
             and model_sample_predictions.size(1) == 6
             for model_sample_predictions in per_model_sample_predictions
         )
-
+        
         bma_probabilities = torch.mean(torch.stack(per_model_sample_predictions), dim=0)
+        bma_probabilities = torch.softmax(bma_probabilities, dim=-1)
 
         assert bma_probabilities.dim() == 2 and bma_probabilities.size(1) == 6  # N x C
         return bma_probabilities
