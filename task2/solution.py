@@ -249,7 +249,8 @@ class SWAGInference(object):
 
         # TODO(1): pick a prediction threshold, either constant or adaptive.
         #  The provided value should suffice to pass the easy baseline.
-        self._prediction_threshold = 2.0 / 3.0
+        self._prediction_threshold =  0.5 # 2.0 / 3.0
+        self._min_probability_difference = 0.1
 
         # TODO(2): perform additional calibration if desired.
         #  Feel free to remove or change the prediction threshold.
@@ -258,6 +259,43 @@ class SWAGInference(object):
         assert val_ys.size() == (140,)
         assert val_is_snow.size() == (140,)
         assert val_is_cloud.size() == (140,)
+        
+        # perform cross validation to find the best value of _prediction_threshold and _min_probability_difference
+        
+        # create a list of thresholds and min_probability_differences to try
+        thresholds = np.arange(0.1, 0.5, 0.1)
+        min_probability_differences = np.arange(0.05, 0.2, 0.05)
+        
+        # create a list of accuracies for each combination of thresholds and min_probability_differences
+        best_accuracy = 0
+        best_threshold = 0
+        best_min_probability_difference = 0
+        for threshold in thresholds:
+            for min_probability_difference in min_probability_differences:
+                self._prediction_threshold = threshold
+                self._min_probability_difference = min_probability_difference
+                pred_prob_all = self.predict_probabilities(val_xs)
+                # pred_prob_max, pred_ys_argmax = torch.max(pred_prob_all, dim=-1)
+                pred_ys = self.predict_labels(pred_prob_all)
+                
+                
+                
+                nonambiguous_mask = val_ys != -1
+
+                accuracy = torch.mean((pred_ys[nonambiguous_mask] == val_ys[nonambiguous_mask]).float()).item()
+                print(f"Accuracy (non-ambiguous only, your predictions), threshold {threshold}, min_probability_difference {min_probability_difference}: {accuracy:.4f}")
+                
+                if accuracy > best_accuracy:
+                    best_accuracy = accuracy
+                    best_threshold = threshold
+                    best_min_probability_difference = min_probability_difference
+                
+                
+    
+        # set the best values
+        self._prediction_threshold = best_threshold
+        self._min_probability_difference = best_min_probability_difference
+        
 
     def predict_probabilities_swag(self, loader: torch.utils.data.DataLoader) -> torch.Tensor:
         """
@@ -285,8 +323,8 @@ class SWAGInference(object):
                     output = self.network(batch_xs[0]).detach()
                 else:
                     output = torch.vstack((output, self.network(batch_xs[0]))).detach()
-
-            per_model_sample_predictions.append(output)
+                    
+            per_model_sample_predictions.append(torch.softmax(output, dim=-1))
 
         assert len(per_model_sample_predictions) == self.bma_samples
         assert all(
@@ -297,7 +335,6 @@ class SWAGInference(object):
         )
         
         bma_probabilities = torch.mean(torch.stack(per_model_sample_predictions), dim=0)
-        bma_probabilities = torch.softmax(bma_probabilities, dim=-1)
 
         assert bma_probabilities.dim() == 2 and bma_probabilities.size(1) == 6  # N x C
         return bma_probabilities
@@ -352,11 +389,18 @@ class SWAGInference(object):
 
         # A model without uncertainty awareness might simply predict the most likely label per sample:
         # return max_likelihood_labels
+        
+        differences = label_probabilities.unsqueeze(-1).expand(-1, 6) - predicted_probabilities
+        indices = torch.argmax(predicted_probabilities, dim=-1)
 
+
+        condition = (label_probabilities >= self._prediction_threshold) \
+                    & (torch.all(differences[~indices:] >= self._min_probability_difference, dim=-1))
+                    
         # A bit better: use a threshold to decide whether to return a label or "don't know" (label -1)
         # TODO(2): implement a different decision rule if desired
         return torch.where(
-            label_probabilities >= self._prediction_threshold,
+            condition,
             max_likelihood_labels,
             torch.ones_like(max_likelihood_labels) * -1,
         )
