@@ -273,50 +273,6 @@ class SWAGInference(object):
         assert val_is_snow.size() == (140,)
         assert val_is_cloud.size() == (140,)
 
-        # perform cross validation to find the best value of _prediction_threshold and _min_probability_difference
-
-        # create a list of thresholds and min_probability_differences to try
-        # thresholds = np.arange(0.1, 0.5, 0.1)
-        # min_probability_differences = np.arange(0.05, 0.2, 0.05)
-
-        # create a list of accuracies for each combination of thresholds and min_probability_differences
-        # best_cost = float("inf")
-        # best_threshold = 0
-        # best_min_probability_difference = 0
-        # for threshold in thresholds:
-        #     for min_probability_difference in min_probability_differences:
-        #         self._prediction_threshold = threshold
-        #         self._min_probability_difference = min_probability_difference
-        #         pred_prob_all = self.predict_probabilities(val_xs)
-        #         # pred_prob_max, pred_ys_argmax = torch.max(pred_prob_all, dim=-1)
-        #         pred_ys = self.predict_labels(pred_prob_all)
-
-        #         nonambiguous_mask = val_ys != -1
-
-        #         accuracy = torch.mean((pred_ys == val_ys).float()).item()
-        #         # accuracy_no_ambiguous = torch.mean((pred_ys[nonambiguous_mask] == val_ys[nonambiguous_mask]).float()).item()
-        #         prediction_cost = cost_function(pred_ys, val_ys).item()
-        #         Ece = ece(pred_prob_all.cpu().numpy(), val_ys.cpu().numpy(), n_bins=20)
-        #         print(f"Ece: {Ece:.4f}")
-        #         cost = prediction_cost + max(0, Ece - 0.1)
-
-        #         print(f"Accuracy, threshold {threshold:.2f}, min_probability_difference {min_probability_difference:.2f}: {accuracy:.4f}")
-        #         print(f"Cost, threshold {threshold:.2f}, min_probability_difference {min_probability_difference:.2f}: {cost:.4f}")
-        #         # print(f"Accuracy (non-ambiguous only, your predictions), threshold {threshold}, min_probability_difference {min_probability_difference}: {accuracy_no_ambiguous:.4f}")
-
-        #         if cost < best_cost:
-        #             best_cost = cost
-        #             best_threshold = threshold
-        #             best_min_probability_difference = min_probability_difference
-
-        # print(f"Best cost: {best_cost:.4f}")
-        # print(f"Best threshold: {best_threshold:.2f}")
-        # print(f"Best min_probability_difference: {best_min_probability_difference:.2f}")
-
-        # # set the best values
-        # self._prediction_threshold = best_threshold
-        # self._min_probability_difference = best_min_probability_difference
-
     def predict_probabilities_swag(self, loader: torch.utils.data.DataLoader) -> torch.Tensor:
         """
         Perform Bayesian model averaging using your SWAG statistics and predict
