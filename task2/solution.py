@@ -104,10 +104,10 @@ class SWAGInference(object):
             train_xs: torch.Tensor,
             model_dir: pathlib.Path,
             inference_mode: InferenceMode = InferenceMode.SWAG_FULL,
-            swag_epochs: int = 200,
+            swag_epochs: int = 60,
             swag_learning_rate: float = 0.045,
-            swag_update_freq: int = 1,
-            deviation_matrix_max_rank: int = 20,
+            swag_update_freq: int = 2,
+            deviation_matrix_max_rank: int = 15,
             bma_samples: int = 30,
     ):
         """
@@ -263,7 +263,7 @@ class SWAGInference(object):
 
         # TODO(1): pick a prediction threshold, either constant or adaptive.
         #  The provided value should suffice to pass the easy baseline.
-        self._prediction_threshold = 2.0 / 3.0
+        self._prediction_threshold = 2. / 3.
 
         # TODO(2): perform additional calibration if desired.
         #  Feel free to remove or change the prediction threshold.
@@ -341,9 +341,9 @@ class SWAGInference(object):
             for batch_xs in loader:
                 batch_xs = batch_xs[0].to(self.device)
                 if output is None:
-                    output = self.network(batch_xs).detach()
+                    output = self.network(batch_xs).cpu().detach()
                 else:
-                    output = torch.vstack((output, self.network(batch_xs))).detach()
+                    output = torch.vstack((output, self.network(batch_xs).cpu())).detach()
 
             per_model_sample_predictions.append(torch.softmax(output, dim=-1))
 
@@ -369,12 +369,12 @@ class SWAGInference(object):
 
         # Define multiplicative factor and sample z2 associated with the contribution of the deviation matrix.
         mult_factor = (1 / math.sqrt(2 * (self.deviation_matrix_max_rank - 1)))
-        z_2 = mult_factor * torch.rand_like(torch.zeros(self.deviation_matrix_max_rank), requires_grad=False)
+        z_2 = mult_factor * torch.randn_like(torch.zeros(self.deviation_matrix_max_rank), requires_grad=False)
 
         # Instead of acting on a full vector of parameters, all operations can be done on per-layer parameters.
         for name, param in self.network.named_parameters():
             # SWAG-diagonal part
-            z_1 = torch.rand_like(torch.zeros_like(param), requires_grad=False)
+            z_1 = torch.randn_like(torch.zeros_like(param), requires_grad=False)
             current_mean = self.first_moment[name]
             current_std = (1 / math.sqrt(2)) * torch.sqrt(self.diag_cov[name]).detach()
             assert current_mean.size() == param.size() and current_std.size() == param.size()
@@ -561,7 +561,7 @@ class SWAGInference(object):
         """
         predictions = []
         for (batch_xs,) in loader:
-            predictions.append(self.network(batch_xs.to(self.device)))
+            predictions.append(self.network(batch_xs.to(self.device)).cpu())
 
         predictions = torch.cat(predictions)
         return torch.softmax(predictions, dim=-1)
@@ -686,7 +686,7 @@ def evaluate(
     # 1. Overall accuracy, counting "don't know" (-1) as its own class
     # 2. Accuracy on all samples that have a known label. Predicting -1 on those counts as wrong here.
     # 3. Accuracy on all samples that have a known label w.r.t. the class with the highest predicted probability.
-    ys = ys.to(swag.device)
+    # ys = ys.to(swag.device)
     accuracy = torch.mean((pred_ys == ys).float()).item()
     accuracy_nonambiguous = torch.mean((pred_ys[nonambiguous_mask] == ys[nonambiguous_mask]).float()).item()
     accuracy_nonambiguous_argmax = torch.mean(
