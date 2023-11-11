@@ -30,7 +30,6 @@ Note that MAP inference can take a long time.
 
 
 def main():
-    
     data_dir = pathlib.Path.cwd()
     model_dir = pathlib.Path.cwd()
     output_dir = pathlib.Path.cwd()
@@ -99,10 +98,10 @@ class SWAGInference(object):
             train_xs: torch.Tensor,
             model_dir: pathlib.Path,
             inference_mode: InferenceMode = InferenceMode.SWAG_FULL,
-            swag_epochs: int = 30,
+            swag_epochs: int = 200,
             swag_learning_rate: float = 0.045,
             swag_update_freq: int = 1,
-            deviation_matrix_max_rank: int = 15,
+            deviation_matrix_max_rank: int = 20,
             bma_samples: int = 30,
     ):
         """
@@ -137,6 +136,7 @@ class SWAGInference(object):
         self.train_dataset = torch.utils.data.TensorDataset(train_xs)
 
         # Common parameters
+        self.n = 0
         self.first_moment = self._create_weight_copy()
         self.second_moment = self._create_weight_copy()
 
@@ -144,26 +144,36 @@ class SWAGInference(object):
         self.diag_cov = self._create_weight_copy()
 
         # Full SWAG deviation matrix
-        self.D = None
+        self.D = collections.deque(maxlen=self.deviation_matrix_max_rank)
 
         # Calibration, prediction, and other attributes
-        self._prediction_threshold = 0.1
-        
+        self._prediction_threshold = None
+
+    def initialize_parameters(self) -> None:
+        """
+        Initialize SWAG statistics with the current weights of self.network.
+        """
+        current_params = {name: param.detach() for name, param in self.network.named_parameters()}
+
+        for name, param in current_params.items():
+            self.first_moment[name] = param.detach()
+            self.second_moment[name] = torch.square(param).detach()
+
     def update_swag(self) -> None:
         """
         Update SWAG statistics with the current weights of self.network.
         """
 
-        # SWAG-diagonal.
-        # This for loop is performed for both diagonal SWAG and full SWAG, and it initializes the values
-        # of the parameters.
+        append_value = {}
         for name, param in self.network.named_parameters():
-            self.first_moment[name] = param.detach()
-            self.second_moment[name] = torch.square(param).detach()
+            self.first_moment[name] = ((1 / (self.n + 1)) * (self.n * self.first_moment[name] + param)).detach()
+            self.second_moment[name] = ((1 / (self.n + 1)) * (self.n * self.second_moment[name]
+                                                              + torch.square(param))).detach()
+            append_value[name] = (param - self.first_moment[name]).detach()
 
-        # Full SWAG
-        if self.inference_mode == InferenceMode.SWAG_FULL:
-            self.D = collections.deque(maxlen=self.deviation_matrix_max_rank)
+        # The first value inserted is removed if the current size of the queue is equal to the rank
+        # constraint
+        self.D.append(append_value)
 
     def fit_swag(self, loader: torch.utils.data.DataLoader) -> None:
         """
@@ -193,7 +203,13 @@ class SWAGInference(object):
             steps_per_epoch=len(loader),
         )
 
+        # Initialize SWAG statistics
+        self.initialize_parameters()
+
+        # Set network to training mode
         self.network.train()
+
+        # Perform the specified number of SWAG epochs
         with tqdm.trange(self.swag_epochs, desc="Running gradient descent for SWA") as pbar:
             pbar_dict = {}
             for epoch in pbar:
@@ -226,17 +242,8 @@ class SWAGInference(object):
 
                 if (epoch + 1) % self.swag_update_freq == 0:
                     # Update moments
-                    n = (epoch + 1) / self.swag_update_freq
-                    append_value = {}
-                    for name, param in self.network.named_parameters():
-                        self.first_moment[name] = ((1 / (n + 1)) * (n * self.first_moment[name] + param)).detach()
-                        self.second_moment[name] = ((1 / (n + 1)) * (n * self.second_moment[name]
-                                                                     + torch.square(param))).detach()
-                        append_value[name] = (param - self.first_moment[name]).detach()
-
-                    # The first value inserted is removed if the current size of the queue is equal to the rank
-                    # constraint
-                    self.D.append(append_value)
+                    self.n = (epoch + 1) / self.swag_update_freq
+                    self.update_swag()
 
         # Save diagonal covariance matrix
         for name, param in self.network.named_parameters():
@@ -256,7 +263,7 @@ class SWAGInference(object):
 
         # TODO(1): pick a prediction threshold, either constant or adaptive.
         #  The provided value should suffice to pass the easy baseline.
-        self._prediction_threshold =  0.65
+        self._prediction_threshold = 0.7
 
         # TODO(2): perform additional calibration if desired.
         #  Feel free to remove or change the prediction threshold.
@@ -402,15 +409,11 @@ class SWAGInference(object):
         num_samples, num_classes = predicted_probabilities.size()
         assert label_probabilities.size() == (num_samples,) and max_likelihood_labels.size() == (num_samples,)
 
-        condition = (label_probabilities >= self._prediction_threshold) 
+        condition = (label_probabilities >= self._prediction_threshold)
 
         # A bit better: use a threshold to decide whether to return a label or "don't know" (label -1)
         # TODO(2): implement a different decision rule if desired
-        return torch.where(
-            condition,
-            max_likelihood_labels,
-            torch.ones_like(max_likelihood_labels) * -1,
-        )
+        return torch.where(condition, max_likelihood_labels, torch.ones_like(max_likelihood_labels) * -1)
 
     def _create_weight_copy(self) -> typing.Dict[str, torch.Tensor]:
         """Create an all-zero copy of the network weights as a dictionary that maps name -> weight"""
@@ -694,7 +697,7 @@ def evaluate(
     # Determine which threshold would yield the smallest cost on the validation data
     # Note that this threshold does not necessarily generalize to the test set!
     # However, it can help you judge your method's calibration.
-    thresholds = np.arange(0.1, 0.9, 0.01) # [0.0] + list(torch.unique(pred_prob_max, sorted=True))
+    thresholds = np.arange(0.1, 0.9, 0.01)  # [0.0] + list(torch.unique(pred_prob_max, sorted=True))
     costs = []
     for threshold in thresholds:
         thresholded_ys = torch.where(pred_prob_max <= threshold, -1 * torch.ones_like(pred_ys), pred_ys_argmax)
