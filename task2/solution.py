@@ -1,3 +1,4 @@
+import abc
 import collections
 import enum
 import math
@@ -12,7 +13,7 @@ import torch.utils.data
 import tqdm
 from matplotlib import pyplot as plt
 
-from util import draw_reliability_diagram, cost_function, setup_seeds, calc_calibration_curve, ece
+from util import draw_reliability_diagram, cost_function, setup_seeds, calc_calibration_curve
 
 EXTENDED_EVALUATION = False
 """
@@ -149,16 +150,6 @@ class SWAGInference(object):
         # Calibration, prediction, and other attributes
         self._prediction_threshold = None
 
-    def initialize_parameters(self) -> None:
-        """
-        Initialize SWAG statistics with the current weights of self.network.
-        """
-        current_params = {name: param.detach() for name, param in self.network.named_parameters()}
-
-        for name, param in current_params.items():
-            self.first_moment[name] = param.detach()
-            self.second_moment[name] = torch.square(param).detach()
-
     def update_swag(self) -> None:
         """
         Update SWAG statistics with the current weights of self.network.
@@ -204,7 +195,11 @@ class SWAGInference(object):
         )
 
         # Initialize SWAG statistics
-        self.initialize_parameters()
+        current_params = {name: param.detach() for name, param in self.network.named_parameters()}
+
+        for name, param in current_params.items():
+            self.first_moment[name] = param.detach()
+            self.second_moment[name] = torch.square(param).detach()
 
         # Set network to training mode
         self.network.train()
@@ -335,7 +330,7 @@ class SWAGInference(object):
         per_model_sample_predictions = []
         for _ in tqdm.trange(self.bma_samples, desc="Performing Bayesian model averaging"):
             # Sample new parameters for the network
-            self.sample_parmeters()
+            self.sample_parameters()
 
             output = None
             for batch_xs in loader:
@@ -360,7 +355,7 @@ class SWAGInference(object):
         assert bma_probabilities.dim() == 2 and bma_probabilities.size(1) == 6  # N x C
         return bma_probabilities
 
-    def sample_parmeters(self) -> None:
+    def sample_parameters(self) -> None:
         """
         Sample a new network from the approximate SWAG posterior.
         For simplicity, this method directly modifies self.network in-place.
