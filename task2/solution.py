@@ -29,12 +29,13 @@ Note that MAP inference can take a long time.
 """
 
 CLAMP_VALUE = 1e-30
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
 
 def main():
+    
     data_dir = pathlib.Path.cwd()
     model_dir = pathlib.Path.cwd()
     output_dir = pathlib.Path.cwd()
@@ -78,8 +79,8 @@ def main():
     # That way, you should get exactly the same results even if you remove evaluation
     # to save computational time when developing the task
     # (as long as you ONLY use torch randomness, and not e.g., random or numpy.random).
-    # with torch.random.fork_rng():
-    #     evaluate(swag, dataset_val, EXTENDED_EVALUATION, output_dir)
+    with torch.random.fork_rng():
+        evaluate(swag, dataset_val, EXTENDED_EVALUATION, output_dir)
 
 
 class InferenceMode(enum.Enum):
@@ -253,8 +254,7 @@ class SWAGInference(object):
 
         # TODO(1): pick a prediction threshold, either constant or adaptive.
         #  The provided value should suffice to pass the easy baseline.
-        self._prediction_threshold =  0.5 # 2.0 / 3.0
-        self._min_probability_difference = 0.1
+        self._prediction_threshold =  0.65
 
         # TODO(2): perform additional calibration if desired.
         #  Feel free to remove or change the prediction threshold.
@@ -267,8 +267,8 @@ class SWAGInference(object):
         # perform cross validation to find the best value of _prediction_threshold and _min_probability_difference
         
         # create a list of thresholds and min_probability_differences to try
-        thresholds = np.arange(0.1, 0.5, 0.1)
-        min_probability_differences = np.arange(0.05, 0.2, 0.05)
+        # thresholds = np.arange(0.1, 0.5, 0.1)
+        # min_probability_differences = np.arange(0.05, 0.2, 0.05)
         
         # create a list of accuracies for each combination of thresholds and min_probability_differences
         # best_cost = float("inf")
@@ -310,8 +310,6 @@ class SWAGInference(object):
         # # set the best values
         # self._prediction_threshold = best_threshold
         # self._min_probability_difference = best_min_probability_difference
-        self._prediction_threshold = 0.4
-        self._min_probability_difference = 0.2
         
 
     def predict_probabilities_swag(self, loader: torch.utils.data.DataLoader) -> torch.Tensor:
@@ -406,19 +404,7 @@ class SWAGInference(object):
         num_samples, num_classes = predicted_probabilities.size()
         assert label_probabilities.size() == (num_samples,) and max_likelihood_labels.size() == (num_samples,)
 
-        # A model without uncertainty awareness might simply predict the most likely label per sample:
-        # return max_likelihood_labels
-        
-        differences = label_probabilities.unsqueeze(-1).expand(-1, num_classes) - predicted_probabilities
-        indices = torch.argmax(predicted_probabilities, dim=-1).unsqueeze(-1).to(device)
-        
-        mask = torch.ones((num_samples, num_classes), dtype=torch.bool).to(device)
-        mask.scatter_(1, indices, 0)
-        
-        differences = differences[mask].view(num_samples, num_classes-1)
-
-        condition = (label_probabilities >= self._prediction_threshold) \
-                    & (torch.all(differences >= self._min_probability_difference, dim=-1))
+        condition = (label_probabilities >= self._prediction_threshold) 
                     
         # A bit better: use a threshold to decide whether to return a label or "don't know" (label -1)
         # TODO(2): implement a different decision rule if desired
@@ -708,17 +694,17 @@ def evaluate(
     # Determine which threshold would yield the smallest cost on the validation data
     # Note that this threshold does not necessarily generalize to the test set!
     # However, it can help you judge your method's calibration.
-    thresholds = [0.0] + list(torch.unique(pred_prob_max, sorted=True))
+    thresholds = np.arange(0.1, 0.9, 0.01) # [0.0] + list(torch.unique(pred_prob_max, sorted=True))
     costs = []
     for threshold in thresholds:
-        thresholded_ys = torch.where(pred_prob_max <= threshold, -1 * torch.ones_like(pred_ys), pred_ys)
+        thresholded_ys = torch.where(pred_prob_max <= threshold, -1 * torch.ones_like(pred_ys), pred_ys_argmax)
         costs.append(cost_function(thresholded_ys, ys).item())
     best_idx = np.argmin(costs)
     print(f"Best cost {costs[best_idx]} at threshold {thresholds[best_idx]}")
     print("Note that this threshold does not necessarily generalize to the test set!")
 
     # Calculate ECE and plot the calibration curve
-    calibration_data = calc_calibration_curve(pred_prob_all.numpy(), ys.numpy(), num_bins=20)
+    calibration_data = calc_calibration_curve(pred_prob_all.cpu().numpy(), ys.cpu().numpy(), num_bins=20)
     print("Validation ECE:", calibration_data["ece"])
 
     if extended_evaluation:
