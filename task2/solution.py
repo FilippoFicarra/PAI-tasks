@@ -28,11 +28,6 @@ this solution always performs MAP inference before running your SWAG implementat
 Note that MAP inference can take a long time.
 """
 
-CLAMP_VALUE = 1e-30
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Using device:", device)
-
 
 def main():
     
@@ -41,19 +36,19 @@ def main():
     output_dir = pathlib.Path.cwd()
 
     # Load training data
-    train_xs = torch.from_numpy(np.load(data_dir / "train_xs.npz")["train_xs"]).to(device)
+    train_xs = torch.from_numpy(np.load(data_dir / "train_xs.npz")["train_xs"])
     raw_train_meta = np.load(data_dir / "train_ys.npz")
-    train_ys = torch.from_numpy(raw_train_meta["train_ys"]).to(device)
-    train_is_snow = torch.from_numpy(raw_train_meta["train_is_snow"]).to(device)
-    train_is_cloud = torch.from_numpy(raw_train_meta["train_is_cloud"]).to(device)
+    train_ys = torch.from_numpy(raw_train_meta["train_ys"])
+    train_is_snow = torch.from_numpy(raw_train_meta["train_is_snow"])
+    train_is_cloud = torch.from_numpy(raw_train_meta["train_is_cloud"])
     dataset_train = torch.utils.data.TensorDataset(train_xs, train_is_snow, train_is_cloud, train_ys)
 
     # Load validation data
-    val_xs = torch.from_numpy(np.load(data_dir / "val_xs.npz")["val_xs"]).to(device)
+    val_xs = torch.from_numpy(np.load(data_dir / "val_xs.npz")["val_xs"])
     raw_val_meta = np.load(data_dir / "val_ys.npz")
-    val_ys = torch.from_numpy(raw_val_meta["val_ys"]).to(device)
-    val_is_snow = torch.from_numpy(raw_val_meta["val_is_snow"]).to(device)
-    val_is_cloud = torch.from_numpy(raw_val_meta["val_is_cloud"]).to(device)
+    val_ys = torch.from_numpy(raw_val_meta["val_ys"])
+    val_is_snow = torch.from_numpy(raw_val_meta["val_is_snow"])
+    val_is_cloud = torch.from_numpy(raw_val_meta["val_is_cloud"])
     dataset_val = torch.utils.data.TensorDataset(val_xs, val_is_snow, val_is_cloud, val_ys)
 
     # Fix all randomness
@@ -121,6 +116,8 @@ class SWAGInference(object):
         :param bma_samples: Number of networks to sample for Bayesian model averaging during prediction
         """
 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.CLAMP_VALUE = 1e-30
         self.model_dir = model_dir
         self.inference_mode = inference_mode
         self.swag_epochs = swag_epochs
@@ -129,10 +126,12 @@ class SWAGInference(object):
         self.deviation_matrix_max_rank = deviation_matrix_max_rank
         self.bma_samples = bma_samples
 
+        print("Using device:", self.device)
+
         # Network used to perform SWAG.
         # Note that all operations in this class modify this network IN-PLACE!
         self.network = CNN(in_channels=3, out_classes=6)
-        self.network.to(device)
+        self.network.to(self.device)
 
         # Store training dataset to recalculate batch normalization statistics during SWAG inference
         self.train_dataset = torch.utils.data.TensorDataset(train_xs)
@@ -158,7 +157,7 @@ class SWAGInference(object):
         # This for loop is performed for both diagonal SWAG and full SWAG, and it initializes the values
         # of the parameters.
         for name, param in self.network.named_parameters():
-            self.first_moment[name] = param
+            self.first_moment[name] = param.detach()
             self.second_moment[name] = torch.square(param).detach()
 
         # Full SWAG
@@ -202,6 +201,8 @@ class SWAGInference(object):
                 num_samples_processed = 0
                 for batch_xs, batch_is_snow, batch_is_cloud, batch_ys in loader:
                     optimizer.zero_grad()
+                    batch_xs = batch_xs.to(self.device)
+                    batch_ys = batch_ys.to(self.device)
                     pred_ys = self.network(batch_xs)
                     batch_loss = loss(input=pred_ys, target=batch_ys)
                     batch_loss.backward()
@@ -239,7 +240,7 @@ class SWAGInference(object):
         # Save diagonal covariance matrix
         for name, param in self.network.named_parameters():
             self.diag_cov[name] = torch.clamp(self.second_moment[name] - torch.square(self.first_moment[name]),
-                                              CLAMP_VALUE).detach()
+                                              self.CLAMP_VALUE).detach()
 
     def calibrate(self, validation_data: torch.utils.data.Dataset) -> None:
         """
@@ -263,13 +264,13 @@ class SWAGInference(object):
         assert val_ys.size() == (140,)
         assert val_is_snow.size() == (140,)
         assert val_is_cloud.size() == (140,)
-        
+
         # perform cross validation to find the best value of _prediction_threshold and _min_probability_difference
-        
+
         # create a list of thresholds and min_probability_differences to try
         # thresholds = np.arange(0.1, 0.5, 0.1)
         # min_probability_differences = np.arange(0.05, 0.2, 0.05)
-        
+
         # create a list of accuracies for each combination of thresholds and min_probability_differences
         # best_cost = float("inf")
         # best_threshold = 0
@@ -281,9 +282,7 @@ class SWAGInference(object):
         #         pred_prob_all = self.predict_probabilities(val_xs)
         #         # pred_prob_max, pred_ys_argmax = torch.max(pred_prob_all, dim=-1)
         #         pred_ys = self.predict_labels(pred_prob_all)
-                
-                
-                
+
         #         nonambiguous_mask = val_ys != -1
 
         #         accuracy = torch.mean((pred_ys == val_ys).float()).item()
@@ -292,25 +291,23 @@ class SWAGInference(object):
         #         Ece = ece(pred_prob_all.cpu().numpy(), val_ys.cpu().numpy(), n_bins=20)
         #         print(f"Ece: {Ece:.4f}")
         #         cost = prediction_cost + max(0, Ece - 0.1)
-                
+
         #         print(f"Accuracy, threshold {threshold:.2f}, min_probability_difference {min_probability_difference:.2f}: {accuracy:.4f}")
         #         print(f"Cost, threshold {threshold:.2f}, min_probability_difference {min_probability_difference:.2f}: {cost:.4f}")
         #         # print(f"Accuracy (non-ambiguous only, your predictions), threshold {threshold}, min_probability_difference {min_probability_difference}: {accuracy_no_ambiguous:.4f}")
-                
+
         #         if cost < best_cost:
         #             best_cost = cost
         #             best_threshold = threshold
         #             best_min_probability_difference = min_probability_difference
-                
-                
+
         # print(f"Best cost: {best_cost:.4f}")
         # print(f"Best threshold: {best_threshold:.2f}")
         # print(f"Best min_probability_difference: {best_min_probability_difference:.2f}")
-        
+
         # # set the best values
         # self._prediction_threshold = best_threshold
         # self._min_probability_difference = best_min_probability_difference
-        
 
     def predict_probabilities_swag(self, loader: torch.utils.data.DataLoader) -> torch.Tensor:
         """
@@ -334,11 +331,12 @@ class SWAGInference(object):
 
             output = None
             for batch_xs in loader:
+                batch_xs = batch_xs[0].to(self.device)
                 if output is None:
-                    output = self.network(batch_xs[0]).detach()
+                    output = self.network(batch_xs).detach()
                 else:
-                    output = torch.vstack((output, self.network(batch_xs[0]))).detach()
-                    
+                    output = torch.vstack((output, self.network(batch_xs))).detach()
+
             per_model_sample_predictions.append(torch.softmax(output, dim=-1))
 
         assert len(per_model_sample_predictions) == self.bma_samples
@@ -348,7 +346,7 @@ class SWAGInference(object):
             and model_sample_predictions.size(1) == 6
             for model_sample_predictions in per_model_sample_predictions
         )
-        
+
         bma_probabilities = torch.mean(torch.stack(per_model_sample_predictions), dim=0)
 
         assert bma_probabilities.dim() == 2 and bma_probabilities.size(1) == 6  # N x C
@@ -362,13 +360,13 @@ class SWAGInference(object):
         """
 
         # Define multiplicative factor and sample z2 associated with the contribution of the deviation matrix.
-        z_2 = torch.normal(torch.zeros(self.deviation_matrix_max_rank))
         mult_factor = (1 / math.sqrt(2 * (self.deviation_matrix_max_rank - 1)))
+        z_2 = mult_factor * torch.rand_like(torch.zeros(self.deviation_matrix_max_rank), requires_grad=False)
 
         # Instead of acting on a full vector of parameters, all operations can be done on per-layer parameters.
         for name, param in self.network.named_parameters():
             # SWAG-diagonal part
-            z_1 = torch.normal(torch.zeros_like(param))
+            z_1 = torch.rand_like(torch.zeros_like(param), requires_grad=False)
             current_mean = self.first_moment[name]
             current_std = (1 / math.sqrt(2)) * torch.sqrt(self.diag_cov[name]).detach()
             assert current_mean.size() == param.size() and current_std.size() == param.size()
@@ -379,12 +377,11 @@ class SWAGInference(object):
             # Full SWAG part
             if self.inference_mode == InferenceMode.SWAG_FULL:
                 for i in range(self.deviation_matrix_max_rank):
-                    sampled_param += mult_factor * self.D[i][name] * z_2[i]
+                    sampled_param += self.D[i][name] * z_2[i]
 
             # Modify weight value in-place; directly changing self.network
             param.data = sampled_param
 
-        # TODO check if this is the correct place for performing batch normalization
         self._update_batchnorm()
 
     def predict_labels(self, predicted_probabilities: torch.Tensor) -> torch.Tensor:
@@ -399,20 +396,20 @@ class SWAGInference(object):
         # label_probabilities contains the per-row maximum values in predicted_probabilities,
         # max_likelihood_labels the corresponding column index (equivalent to class).
         label_probabilities, max_likelihood_labels = torch.max(predicted_probabilities, dim=-1)
-        label_probabilities = label_probabilities.to(device)
-        max_likelihood_labels = max_likelihood_labels.to(device)
+        label_probabilities = label_probabilities
+        max_likelihood_labels = max_likelihood_labels
         num_samples, num_classes = predicted_probabilities.size()
         assert label_probabilities.size() == (num_samples,) and max_likelihood_labels.size() == (num_samples,)
 
         condition = (label_probabilities >= self._prediction_threshold) 
-                    
+
         # A bit better: use a threshold to decide whether to return a label or "don't know" (label -1)
         # TODO(2): implement a different decision rule if desired
         return torch.where(
             condition,
             max_likelihood_labels,
-            torch.ones_like(max_likelihood_labels).to(device) * -1,
-        ).to(device)
+            torch.ones_like(max_likelihood_labels) * -1,
+        )
 
     def _create_weight_copy(self) -> typing.Dict[str, torch.Tensor]:
         """Create an all-zero copy of the network weights as a dictionary that maps name -> weight"""
@@ -438,7 +435,7 @@ class SWAGInference(object):
         # MAP inference to obtain initial weights
         PRETRAINED_WEIGHTS_FILE = self.model_dir / "map_weights.pt"
         if USE_PRETRAINED_INIT:
-            self.network.load_state_dict(torch.load(PRETRAINED_WEIGHTS_FILE, map_location='cpu')).to(device)
+            self.network.load_state_dict(torch.load(PRETRAINED_WEIGHTS_FILE, map_location=self.device))
             print("Loaded pretrained MAP weights from", PRETRAINED_WEIGHTS_FILE)
         else:
             self.fit_map(loader)
@@ -487,7 +484,7 @@ class SWAGInference(object):
         # Batch normalization layers are only updated if the network is in training mode,
         # and are replaced by a moving average if the network is in evaluation mode.
         self.network.train()
-        with tqdm.trange(map_epochs, desc="Fitting initial MAP weights") as pbar:
+        with (tqdm.trange(map_epochs, desc="Fitting initial MAP weights") as pbar):
             pbar_dict = {}
             # Perform the specified number of MAP epochs
             for epoch in pbar:
@@ -496,6 +493,8 @@ class SWAGInference(object):
                 num_samples_processed = 0
                 # Iterate over batches of randomly shuffled training data
                 for batch_xs, _, _, batch_ys in loader:
+                    batch_xs = batch_xs.to(self.device)
+                    batch_ys = batch_ys.to(self.device)
                     # Training step
                     optimizer.zero_grad()
                     pred_ys = self.network(batch_xs)
@@ -514,10 +513,9 @@ class SWAGInference(object):
                     average_loss = (batch_xs.size(0) * batch_loss.item() + num_samples_processed * average_loss) / (
                             num_samples_processed + batch_xs.size(0)
                     )
-                    average_accuracy = (
-                                               torch.sum(pred_ys.argmax(dim=-1) == batch_ys).item()
-                                               + num_samples_processed * average_accuracy
-                                       ) / (num_samples_processed + batch_xs.size(0))
+                    average_accuracy = (torch.sum(pred_ys.argmax(dim=-1) == batch_ys).item() +
+                                        num_samples_processed * average_accuracy
+                                        ) / (num_samples_processed + batch_xs.size(0))
                     num_samples_processed += batch_xs.size(0)
 
                     pbar_dict["avg. epoch loss"] = average_loss
@@ -557,7 +555,7 @@ class SWAGInference(object):
         """
         predictions = []
         for (batch_xs,) in loader:
-            predictions.append(self.network(batch_xs))
+            predictions.append(self.network(batch_xs.to(self.device)))
 
         predictions = torch.cat(predictions)
         return torch.softmax(predictions, dim=-1)
@@ -598,7 +596,7 @@ class SWAGInference(object):
 
         self.network.train()
         for (batch_xs,) in loader:
-            self.network(batch_xs)
+            self.network(batch_xs.to(self.device))
         self.network.eval()
 
         # Restore old `momentum` hyperparameter values
@@ -682,6 +680,7 @@ def evaluate(
     # 1. Overall accuracy, counting "don't know" (-1) as its own class
     # 2. Accuracy on all samples that have a known label. Predicting -1 on those counts as wrong here.
     # 3. Accuracy on all samples that have a known label w.r.t. the class with the highest predicted probability.
+    ys = ys.to(swag.device)
     accuracy = torch.mean((pred_ys == ys).float()).item()
     accuracy_nonambiguous = torch.mean((pred_ys[nonambiguous_mask] == ys[nonambiguous_mask]).float()).item()
     accuracy_nonambiguous_argmax = torch.mean(

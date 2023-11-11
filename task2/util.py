@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.backends.cudnn
 
+
 def ece(predicted_probabilities: np.ndarray, labels: np.ndarray, n_bins: int = 30) -> float:
     """
     Computes the Expected Calibration Error (ECE).
@@ -43,7 +44,7 @@ def ece(predicted_probabilities: np.ndarray, labels: np.ndarray, n_bins: int = 3
     sums_per_bin = sums_per_bin.astype(np.float32)
 
     total_per_bin = (
-        np.bincount(probs_as_bin_num, minlength=n_bins) + np.finfo(sums_per_bin.dtype).eps
+            np.bincount(probs_as_bin_num, minlength=n_bins) + np.finfo(sums_per_bin.dtype).eps
     )  # division by zero
     avg_prob_per_bin = sums_per_bin / total_per_bin
 
