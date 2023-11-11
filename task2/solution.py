@@ -65,15 +65,13 @@ def main():
         train_xs=dataset_train.tensors[0],
         model_dir=model_dir,
     )
-    # Compute mean and covariance of parameters
     swag.fit(train_loader)
-    # Calibrate the threshold based on the validation set
     swag.calibrate(dataset_val)
 
-    # The method fork_rng ensures that the evaluation does not change the rng state.
+    # fork_rng ensures that the evaluation does not change the rng state.
     # That way, you should get exactly the same results even if you remove evaluation
     # to save computational time when developing the task
-    # (as long as you ONLY use torch randomness, and not e.g., random or numpy.random).
+    # (as long as you ONLY use torch randomness, and not e.g. random or numpy.random).
     with torch.random.fork_rng():
         evaluate(swag, dataset_val, EXTENDED_EVALUATION, output_dir)
 
@@ -91,7 +89,14 @@ class InferenceMode(enum.Enum):
 
 class SWAGInference(object):
     """
-    Implementation of SWA-Gaussian.
+    Your implementation of SWA-Gaussian.
+    This class is used to run and evaluate your solution.
+    You must preserve all methods and signatures of this class.
+    However, you can add new methods if you want.
+
+    We provide basic functionality and some helper methods.
+    You can pass all baselines by only modifying methods marked with TODO.
+    However, we encourage you to skim other methods in order to gain a better understanding of SWAG.
     """
 
     def __init__(
@@ -224,12 +229,12 @@ class SWAGInference(object):
 
                     # Calculate cumulative average training loss and accuracy
                     average_loss = (batch_xs.size(0) * batch_loss.item() + num_samples_processed * average_loss) / (
-                            num_samples_processed + batch_xs.size(0)
+                        num_samples_processed + batch_xs.size(0)
                     )
                     average_accuracy = (
-                                               torch.sum(pred_ys.argmax(dim=-1) == batch_ys).item()
-                                               + num_samples_processed * average_accuracy
-                                       ) / (num_samples_processed + batch_xs.size(0))
+                        torch.sum(pred_ys.argmax(dim=-1) == batch_ys).item()
+                        + num_samples_processed * average_accuracy
+                    ) / (num_samples_processed + batch_xs.size(0))
                     num_samples_processed += batch_xs.size(0)
                     pbar_dict["avg. epoch loss"] = average_loss
                     pbar_dict["avg. epoch accuracy"] = average_accuracy
@@ -252,13 +257,13 @@ class SWAGInference(object):
         where you can identify the latter by having label -1.
         """
         if self.inference_mode == InferenceMode.MAP:
-            # In MAP mode, predict argmax and do nothing else
+            # In MAP mode, simply predict argmax and do nothing else
             self._prediction_threshold = 0.0
             return
 
         # TODO(1): pick a prediction threshold, either constant or adaptive.
         #  The provided value should suffice to pass the easy baseline.
-        self._prediction_threshold = 0.7
+        self._prediction_threshold = 2.0 / 3.0
 
         # TODO(2): perform additional calibration if desired.
         #  Feel free to remove or change the prediction threshold.
@@ -391,7 +396,7 @@ class SWAGInference(object):
         """
         Predict labels in {0, 1, 2, 3, 4, 5} or "don't know" as -1
         based on your model's predicted probabilities.
-        The parameter predicted_probabilities is a Nx6 tensor containing predicted probabilities
+        The parameter predicted_probabilities is an Nx6 tensor containing predicted probabilities
         as returned by predict_probabilities(...).
         The output should be an N-dimensional long tensor, containing values in {-1, 0, 1, 2, 3, 4, 5}.
         """
@@ -418,8 +423,8 @@ class SWAGInference(object):
         }
 
     def fit(
-            self,
-            loader: torch.utils.data.DataLoader,
+        self,
+        loader: torch.utils.data.DataLoader,
     ) -> None:
         """
         Perform full SWAG fitting procedure.
@@ -434,7 +439,8 @@ class SWAGInference(object):
         # MAP inference to obtain initial weights
         PRETRAINED_WEIGHTS_FILE = self.model_dir / "map_weights.pt"
         if USE_PRETRAINED_INIT:
-            self.network.load_state_dict(torch.load(PRETRAINED_WEIGHTS_FILE, map_location=self.device))
+            self.network.load_state_dict(torch.load(PRETRAINED_WEIGHTS_FILE, map_location='cpu'))
+            self.network.to(self.device)
             print("Loaded pretrained MAP weights from", PRETRAINED_WEIGHTS_FILE)
         else:
             self.fit_map(loader)
@@ -483,7 +489,7 @@ class SWAGInference(object):
         # Batch normalization layers are only updated if the network is in training mode,
         # and are replaced by a moving average if the network is in evaluation mode.
         self.network.train()
-        with (tqdm.trange(map_epochs, desc="Fitting initial MAP weights") as pbar):
+        with tqdm.trange(map_epochs, desc="Fitting initial MAP weights") as pbar:
             pbar_dict = {}
             # Perform the specified number of MAP epochs
             for epoch in pbar:
@@ -510,11 +516,12 @@ class SWAGInference(object):
 
                     # Calculate cumulative average training loss and accuracy
                     average_loss = (batch_xs.size(0) * batch_loss.item() + num_samples_processed * average_loss) / (
-                            num_samples_processed + batch_xs.size(0)
+                        num_samples_processed + batch_xs.size(0)
                     )
-                    average_accuracy = (torch.sum(pred_ys.argmax(dim=-1) == batch_ys).item() +
-                                        num_samples_processed * average_accuracy
-                                        ) / (num_samples_processed + batch_xs.size(0))
+                    average_accuracy = (
+                        torch.sum(pred_ys.argmax(dim=-1) == batch_ys).item()
+                        + num_samples_processed * average_accuracy
+                    ) / (num_samples_processed + batch_xs.size(0))
                     num_samples_processed += batch_xs.size(0)
 
                     pbar_dict["avg. epoch loss"] = average_loss
@@ -627,10 +634,10 @@ class SWAGScheduler(torch.optim.lr_scheduler.LRScheduler):
 
     # TODO(2): Add and store additional arguments if you decide to implement a custom scheduler
     def __init__(
-            self,
-            optimizer: torch.optim.Optimizer,
-            epochs: int,
-            steps_per_epoch: int,
+        self,
+        optimizer: torch.optim.Optimizer,
+        epochs: int,
+        steps_per_epoch: int,
     ):
         self.epochs = epochs
         self.steps_per_epoch = steps_per_epoch
@@ -648,10 +655,10 @@ class SWAGScheduler(torch.optim.lr_scheduler.LRScheduler):
 
 
 def evaluate(
-        swag: SWAGInference,
-        eval_dataset: torch.utils.data.Dataset,
-        extended_evaluation: bool,
-        output_dir: pathlib.Path,
+    swag: SWAGInference,
+    eval_dataset: torch.utils.data.Dataset,
+    extended_evaluation: bool,
+    output_dir: pathlib.Path,
 ) -> None:
     """
     Evaluate your model.
@@ -762,9 +769,9 @@ class CNN(torch.nn.Module):
     """
 
     def __init__(
-            self,
-            in_channels: int,
-            out_classes: int,
+        self,
+        in_channels: int,
+        out_classes: int,
     ):
         super().__init__()
 
