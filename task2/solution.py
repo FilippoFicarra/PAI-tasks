@@ -148,7 +148,8 @@ class SWAGInference(object):
 
         # Calibration, prediction, and other attributes
         self._prediction_threshold = 0.1
-
+        
+    def update_swag(self) -> None:
         """
         Update SWAG statistics with the current weights of self.network.
         """
