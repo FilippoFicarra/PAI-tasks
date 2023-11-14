@@ -1,4 +1,3 @@
-import abc
 import collections
 import enum
 import math
@@ -57,7 +56,7 @@ def main():
     # Build and run the actual solution
     train_loader = torch.utils.data.DataLoader(
         dataset_train,
-        batch_size=16,
+        batch_size=32,
         shuffle=True,
         num_workers=0,
     )
@@ -104,10 +103,10 @@ class SWAGInference(object):
             train_xs: torch.Tensor,
             model_dir: pathlib.Path,
             inference_mode: InferenceMode = InferenceMode.SWAG_FULL,
-            swag_epochs: int = 60,
+            swag_epochs: int = 80,
             swag_learning_rate: float = 0.045,
             swag_update_freq: int = 2,
-            deviation_matrix_max_rank: int = 15,
+            deviation_matrix_max_rank: int = 20,
             bma_samples: int = 30,
     ):
         """
@@ -130,12 +129,14 @@ class SWAGInference(object):
         self.swag_update_freq = swag_update_freq
         self.deviation_matrix_max_rank = deviation_matrix_max_rank
         self.bma_samples = bma_samples
+        self.predicted_probabilities = None
 
         print("Using device:", self.device)
 
         # Network used to perform SWAG.
         # Note that all operations in this class modify this network IN-PLACE!
         self.network = CNN(in_channels=3, out_classes=6)
+        # self.network = ResNet(in_channels=3, num_classes=6, block=BasicBlock, num_layers=34)
         self.network.to(self.device)
 
         # Store training dataset to recalculate batch normalization statistics during SWAG inference
@@ -153,7 +154,7 @@ class SWAGInference(object):
         self.D = collections.deque(maxlen=self.deviation_matrix_max_rank)
 
         # Calibration, prediction, and other attributes
-        self._prediction_threshold = None
+        self.prediction_threshold = None
 
     def update_swag(self) -> None:
         """
@@ -189,7 +190,11 @@ class SWAGInference(object):
             weight_decay=1e-4,
         )
         loss = torch.nn.CrossEntropyLoss(
-            reduction="mean",
+            reduction="mean"
+        )
+
+        loss_amb = torch.nn.MSELoss(
+            reduction="none"
         )
 
         # Change scheduler if needed
@@ -222,19 +227,24 @@ class SWAGInference(object):
                     batch_ys = batch_ys.to(self.device)
                     pred_ys = self.network(batch_xs)
                     batch_loss = loss(input=pred_ys, target=batch_ys)
-                    batch_loss.backward()
+                    batch_loss_amb = torch.sum(torch.sum(loss_amb(input=torch.softmax(pred_ys, dim=0),
+                                                                  target=torch.zeros_like(pred_ys)), dim=1)
+                                               * torch.bitwise_or(batch_is_snow == 1, batch_is_cloud == 1)
+                                               .to(self.device))
+                    tot_loss = batch_loss + 0.2 * batch_loss_amb
+                    tot_loss.backward()
                     optimizer.step()
                     pbar_dict["lr"] = lr_scheduler.get_last_lr()[0]
                     lr_scheduler.step()
 
                     # Calculate cumulative average training loss and accuracy
                     average_loss = (batch_xs.size(0) * batch_loss.item() + num_samples_processed * average_loss) / (
-                        num_samples_processed + batch_xs.size(0)
+                            num_samples_processed + batch_xs.size(0)
                     )
                     average_accuracy = (
-                        torch.sum(pred_ys.argmax(dim=-1) == batch_ys).item()
-                        + num_samples_processed * average_accuracy
-                    ) / (num_samples_processed + batch_xs.size(0))
+                                               torch.sum(pred_ys.argmax(dim=-1) == batch_ys).item()
+                                               + num_samples_processed * average_accuracy
+                                       ) / (num_samples_processed + batch_xs.size(0))
                     num_samples_processed += batch_xs.size(0)
                     pbar_dict["avg. epoch loss"] = average_loss
                     pbar_dict["avg. epoch accuracy"] = average_accuracy
@@ -258,20 +268,37 @@ class SWAGInference(object):
         """
         if self.inference_mode == InferenceMode.MAP:
             # In MAP mode, simply predict argmax and do nothing else
-            self._prediction_threshold = 0.0
+            self.prediction_threshold = 0.0
             return
 
-        # TODO(1): pick a prediction threshold, either constant or adaptive.
-        #  The provided value should suffice to pass the easy baseline.
-        self._prediction_threshold = 2. / 3.
-
-        # TODO(2): perform additional calibration if desired.
-        #  Feel free to remove or change the prediction threshold.
+        # Get validation data and check shapes
         val_xs, val_is_snow, val_is_cloud, val_ys = validation_data.tensors
         assert val_xs.size() == (140, 3, 60, 60)  # N x C x H x W
         assert val_ys.size() == (140,)
         assert val_is_snow.size() == (140,)
         assert val_is_cloud.size() == (140,)
+
+        # Define candidate thresholds
+        thresholds = np.linspace(0.5, 0.9, 10000)
+        energy = float("inf")
+        best_threshold = 0.0
+
+        self.predicted_probabilities = self.predict_probabilities(val_xs)
+
+        for threshold in thresholds:
+            self.prediction_threshold = threshold
+            pred_ys = self.predict_labels(self.predicted_probabilities)
+
+            new_energy = cost_function(pred_ys, val_ys).item()
+
+            if new_energy < energy:
+                best_threshold = self.prediction_threshold
+                energy = new_energy
+                print(f"New best threshold:  {best_threshold}, new best energy: {energy}")
+
+        print(f"Final best threshold:  {best_threshold}, final best energy: {energy}")
+        # self.prediction_threshold = best_threshold
+        self.prediction_threshold = 0.75
 
     def predict_probabilities_swag(self, loader: torch.utils.data.DataLoader) -> torch.Tensor:
         """
@@ -325,7 +352,7 @@ class SWAGInference(object):
 
         # Define multiplicative factor and sample z2 associated with the contribution of the deviation matrix.
         mult_factor = (1 / math.sqrt(2 * (self.deviation_matrix_max_rank - 1)))
-        z_2 = mult_factor * torch.randn_like(torch.zeros(self.deviation_matrix_max_rank), requires_grad=False)
+        z_2 = mult_factor * torch.randn_like(torch.zeros(len(self.D)), requires_grad=False)
 
         # Instead of acting on a full vector of parameters, all operations can be done on per-layer parameters.
         for name, param in self.network.named_parameters():
@@ -340,7 +367,7 @@ class SWAGInference(object):
 
             # Full SWAG part
             if self.inference_mode == InferenceMode.SWAG_FULL:
-                for i in range(self.deviation_matrix_max_rank):
+                for i in range(len(self.D)):
                     sampled_param += self.D[i][name] * z_2[i]
 
             # Modify weight value in-place; directly changing self.network
@@ -365,10 +392,9 @@ class SWAGInference(object):
         num_samples, num_classes = predicted_probabilities.size()
         assert label_probabilities.size() == (num_samples,) and max_likelihood_labels.size() == (num_samples,)
 
-        condition = (label_probabilities >= self._prediction_threshold)
+        condition = (label_probabilities >= self.prediction_threshold)
 
         # A bit better: use a threshold to decide whether to return a label or "don't know" (label -1)
-        # TODO(2): implement a different decision rule if desired
         return torch.where(condition, max_likelihood_labels, torch.ones_like(max_likelihood_labels) * -1)
 
     def _create_weight_copy(self) -> typing.Dict[str, torch.Tensor]:
@@ -379,8 +405,8 @@ class SWAGInference(object):
         }
 
     def fit(
-        self,
-        loader: torch.utils.data.DataLoader,
+            self,
+            loader: torch.utils.data.DataLoader,
     ) -> None:
         """
         Perform full SWAG fitting procedure.
@@ -397,7 +423,6 @@ class SWAGInference(object):
         if USE_PRETRAINED_INIT:
             self.network.load_state_dict(torch.load(PRETRAINED_WEIGHTS_FILE, map_location='cpu'))
             self.network.to(self.device)
-            print("Loaded pretrained MAP weights from", PRETRAINED_WEIGHTS_FILE)
         else:
             self.fit_map(loader)
 
@@ -410,7 +435,7 @@ class SWAGInference(object):
         MAP inference procedure to obtain initial weights of self.network.
         This is the exact procedure used to obtain the pretrained weights we provide.
         """
-        map_epochs = 140
+        map_epochs = 30
         initial_lr = 0.01
         decayed_lr = 0.0001
         decay_start_epoch = 50
@@ -472,12 +497,12 @@ class SWAGInference(object):
 
                     # Calculate cumulative average training loss and accuracy
                     average_loss = (batch_xs.size(0) * batch_loss.item() + num_samples_processed * average_loss) / (
-                        num_samples_processed + batch_xs.size(0)
+                            num_samples_processed + batch_xs.size(0)
                     )
                     average_accuracy = (
-                        torch.sum(pred_ys.argmax(dim=-1) == batch_ys).item()
-                        + num_samples_processed * average_accuracy
-                    ) / (num_samples_processed + batch_xs.size(0))
+                                               torch.sum(pred_ys.argmax(dim=-1) == batch_ys).item()
+                                               + num_samples_processed * average_accuracy
+                                       ) / (num_samples_processed + batch_xs.size(0))
                     num_samples_processed += batch_xs.size(0)
 
                     pbar_dict["avg. epoch loss"] = average_loss
@@ -585,15 +610,13 @@ class SWAGScheduler(torch.optim.lr_scheduler.LRScheduler):
 
         This method should return a single float: the new learning rate.
         """
-        # TODO(2): Implement a custom schedule if desired
         return old_lr
 
-    # TODO(2): Add and store additional arguments if you decide to implement a custom scheduler
     def __init__(
-        self,
-        optimizer: torch.optim.Optimizer,
-        epochs: int,
-        steps_per_epoch: int,
+            self,
+            optimizer: torch.optim.Optimizer,
+            epochs: int,
+            steps_per_epoch: int,
     ):
         self.epochs = epochs
         self.steps_per_epoch = steps_per_epoch
@@ -611,10 +634,10 @@ class SWAGScheduler(torch.optim.lr_scheduler.LRScheduler):
 
 
 def evaluate(
-    swag: SWAGInference,
-    eval_dataset: torch.utils.data.Dataset,
-    extended_evaluation: bool,
-    output_dir: pathlib.Path,
+        swag: SWAGInference,
+        eval_dataset: torch.utils.data.Dataset,
+        extended_evaluation: bool,
+        output_dir: pathlib.Path,
 ) -> None:
     """
     Evaluate your model.
@@ -631,7 +654,11 @@ def evaluate(
     # Predict class probabilities on test data,
     # most likely classes (according to the max predicted probability),
     # and classes as predicted by your SWAG implementation.
-    pred_prob_all = swag.predict_probabilities(xs)
+    if swag.predicted_probabilities is None:
+        pred_prob_all = swag.predict_probabilities(xs)
+    else:
+        pred_prob_all = swag.predicted_probabilities
+
     pred_prob_max, pred_ys_argmax = torch.max(pred_prob_all, dim=-1)
     pred_ys = swag.predict_labels(pred_prob_all)
 
@@ -648,6 +675,7 @@ def evaluate(
     accuracy_nonambiguous_argmax = torch.mean(
         (pred_ys_argmax[nonambiguous_mask] == ys[nonambiguous_mask]).float()
     ).item()
+
     print(f"Accuracy (raw): {accuracy:.4f}")
     print(f"Accuracy (non-ambiguous only, your predictions): {accuracy_nonambiguous:.4f}")
     print(f"Accuracy (non-ambiguous only, predicting most-likely class): {accuracy_nonambiguous_argmax:.4f}")
@@ -725,9 +753,9 @@ class CNN(torch.nn.Module):
     """
 
     def __init__(
-        self,
-        in_channels: int,
-        out_classes: int,
+            self,
+            in_channels: int,
+            out_classes: int,
     ):
         super().__init__()
 
