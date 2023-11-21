@@ -134,7 +134,7 @@ class BO_algo():
         # ei_f = mean_f + beta * std_f
         
         # LCB
-        beta = 0.5
+        beta = 0.2
         ei_f = mean_f - beta * std_f
         
         # PI
