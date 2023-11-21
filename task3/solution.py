@@ -2,6 +2,10 @@
 import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
 # import additional ...
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel, Matern, DotProduct
+from scipy.stats import norm
+
 
 
 # global variables
@@ -11,12 +15,33 @@ SAFETY_THRESHOLD = 4  # threshold, upper bound of SA
 
 # TODO: implement a self-contained solution in the BO_algo class.
 # NOTE: main() is not called by the checker.
+
 class BO_algo():
     def __init__(self):
         """Initializes the algorithm with a parameter configuration."""
         # TODO: Define all relevant class members for your BO algorithm here.
-        pass
-
+        
+        np.random.seed(42)
+        
+        sigma_f = 0.15
+        self.kernel_f = 0.5**2 * RBF(length_scale=10.0)  
+        self.f = GaussianProcessRegressor(kernel=self.kernel_f, random_state=0, alpha=sigma_f**2)
+        
+        # Kernel and prior mean setup for v
+        sigma_v = 0.0001
+        self.kernel_v = 2 * RBF(length_scale=10.0) * ConstantKernel(4.0)
+        self.v = GaussianProcessRegressor(kernel=self.kernel_v, random_state=0, alpha=sigma_v**2)
+        
+        X = np.linspace(DOMAIN[0][0], DOMAIN[0][1], 100)[:, None]
+        y = np.ones(X.shape[0]) * 4
+        self.v.fit(X, y)
+                
+        # Data storage
+        self.x = np.array([])
+        self.f_x = np.array([])
+        self.v_x = np.array([])
+        
+        self.sa = 4.0
     def next_recommendation(self):
         """
         Recommend the next input to sample.
@@ -31,7 +56,13 @@ class BO_algo():
         # In implementing this function, you may use
         # optimize_acquisition_function() defined below.
 
-        raise NotImplementedError
+        if self.x.size == 0:
+            
+            x = np.random.uniform(DOMAIN[0][0], DOMAIN[0][1])
+            return x
+        else:
+            x = self.optimize_acquisition_function()
+            return x
 
     def optimize_acquisition_function(self):
         """Optimizes the acquisition function defined below (DO NOT MODIFY).
@@ -79,7 +110,39 @@ class BO_algo():
         """
         x = np.atleast_2d(x)
         # TODO: Implement the acquisition function you want to optimize.
-        raise NotImplementedError
+
+        mean_f, std_f = self.f.predict(x, return_std=True)
+        mean_v, _ = self.v.predict(x, return_std=True)
+        
+
+        # EI
+        # best_f = np.max(self.f_x)
+        # delta = (best_f - mean_f) 
+        # z_f = delta / std_f
+        # ei_f = delta * norm.cdf(z_f) + std_f * norm.pdf(z_f)
+        
+        # UCB
+        beta = 0.2
+        ei_f = mean_f + beta * std_f
+        
+        # LCB
+        # beta = 1.0
+        # ei_f = mean_f - beta * std_f
+        
+        # PI
+        # best_f = np.max(self.f_x)
+        
+        # z_f = (mean_f - best_f) / std_f
+        # ei_f = norm.cdf(z_f)
+        
+        # p = norm.cdf((self.sa - mean_v) / std_v)
+        
+        
+        penalty = np.maximum(mean_v - self.sa, 0)
+        lambda_param = 1.5
+        
+        return ei_f - lambda_param * penalty
+
 
     def add_data_point(self, x: float, f: float, v: float):
         """
@@ -95,8 +158,14 @@ class BO_algo():
             SA constraint func
         """
         # TODO: Add the observed data {x, f, v} to your model.
-        raise NotImplementedError
 
+        self.x = np.vstack((self.x, x)) if self.x.size else np.array([x])
+        self.f_x = np.vstack((self.f_x, f)) if self.f_x.size else np.array([f])
+        self.v_x = np.vstack((self.v_x, v)) if self.v_x.size else np.array([v])
+        
+        self.f.fit(self.x, self.f_x)
+        self.v.fit(self.x, self.v_x)
+        
     def get_solution(self):
         """
         Return x_opt that is believed to be the maximizer of f.
@@ -107,8 +176,17 @@ class BO_algo():
             the optimal solution of the problem
         """
         # TODO: Return your predicted safe optimum of f.
-        raise NotImplementedError
 
+        prediction = np.copy(self.f_x)
+        prediction[np.where(self.v_x >= self.sa)] = -np.inf
+        return self.x[np.argmax(prediction)]
+        # search_range = np.linspace(DOMAIN[0][0], DOMAIN[0][1], 100000)
+        # mean_f, _ = self.f.predict(search_range.reshape(-1, 1), return_std=True)
+        # mean_v, _ = self.v.predict(search_range.reshape(-1, 1), return_std=True)
+        # mean_f[np.where(mean_v >= self.sa)] = -np.inf
+        # max_index = np.argmax(mean_f)
+        # return search_range[max_index]
+        
     def plot(self, plot_recommendation: bool = True):
         """Plot objective and constraint posterior for debugging (OPTIONAL).
 
