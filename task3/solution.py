@@ -3,7 +3,7 @@ import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
 # import additional ...
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel, Matern, DotProduct
+from sklearn.gaussian_process.kernels import ConstantKernel, Matern
 from scipy.stats import norm
 
 
@@ -24,17 +24,17 @@ class BO_algo():
         np.random.seed(42)
         
         sigma_f = 0.15
-        self.kernel_f = 0.5**2 * RBF(length_scale=10.0)  
-        self.f = GaussianProcessRegressor(kernel=self.kernel_f, random_state=0, alpha=sigma_f**2)
+        self.kernel_f = Matern(nu=2.5, length_scale=0.5)
+        self.f = GaussianProcessRegressor(kernel=self.kernel_f, random_state=42, alpha=sigma_f**2)
         
         # Kernel and prior mean setup for v
         sigma_v = 0.0001
-        self.kernel_v = 2 * RBF(length_scale=10.0) * ConstantKernel(4.0)
-        self.v = GaussianProcessRegressor(kernel=self.kernel_v, random_state=0, alpha=sigma_v**2)
+        self.kernel_v = Matern(nu=2.5, length_scale=0.5) + ConstantKernel(4)
+        self.v = GaussianProcessRegressor(kernel=self.kernel_v, random_state=42, alpha=sigma_v**2)
         
-        X = np.linspace(DOMAIN[0][0], DOMAIN[0][1], 100)[:, None]
-        y = np.ones(X.shape[0]) * 4
-        self.v.fit(X, y)
+        # X = np.linspace(DOMAIN[0][0], DOMAIN[0][1], 100)[:, None]
+        # y = np.ones(X.shape[0]) * 4
+        # self.v.fit(X, y)
                 
         # Data storage
         self.x = np.array([])
@@ -55,14 +55,22 @@ class BO_algo():
         # using functions f and v.
         # In implementing this function, you may use
         # optimize_acquisition_function() defined below.
+        # if self.x.size == 0:
+        #     x_domain = np.linspace(*DOMAIN[0], 4000)[:, None]
+        #     c_val = np.vectorize(self.v)(x_domain)
+        #     x_valid = x_domain[c_val < SAFETY_THRESHOLD]
+        #     np.random.seed(0)
+        #     np.random.shuffle(x_valid)
+        #     x = x_valid[0]
+        #     return x
+        # else:
+        x = self.optimize_acquisition_function()
 
-        if self.x.size == 0:
-            
-            x = np.random.uniform(DOMAIN[0][0], DOMAIN[0][1])
-            return x
-        else:
-            x = self.optimize_acquisition_function()
-            return x
+        while np.abs(x-self.x[0]) <= 0.1:
+            rand = np.random.uniform(-0.2, 0.2)
+            new_x = self.optimize_acquisition_function() + rand
+            x = np.clip(new_x , DOMAIN[0,0], DOMAIN[0,1])
+        return x
 
     def optimize_acquisition_function(self):
         """Optimizes the acquisition function defined below (DO NOT MODIFY).
@@ -117,17 +125,17 @@ class BO_algo():
 
         # EI
         # best_f = np.max(self.f_x)
-        # delta = (best_f - mean_f) 
+        # delta = (best_f - mean_f)
         # z_f = delta / std_f
         # ei_f = delta * norm.cdf(z_f) + std_f * norm.pdf(z_f)
         
         # UCB
-        beta = 0.2
-        ei_f = mean_f + beta * std_f
+        # beta = 0.3
+        # ei_f = mean_f + beta * std_f
         
         # LCB
-        # beta = 1.0
-        # ei_f = mean_f - beta * std_f
+        beta = 0.5
+        ei_f = mean_f - beta * std_f
         
         # PI
         # best_f = np.max(self.f_x)
@@ -139,7 +147,7 @@ class BO_algo():
         
         
         penalty = np.maximum(mean_v - self.sa, 0)
-        lambda_param = 1.5
+        lambda_param = 2.0
         
         return ei_f - lambda_param * penalty
 
