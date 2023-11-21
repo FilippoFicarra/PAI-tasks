@@ -134,7 +134,7 @@ class BO_algo():
         # ei_f = mean_f + beta * std_f
         
         # LCB
-        beta = 0.2
+        beta = 0.75
         ei_f = mean_f - beta * std_f
         
         # PI
@@ -146,7 +146,7 @@ class BO_algo():
         # p = norm.cdf((self.sa - mean_v) / std_v)
         
         
-        penalty = np.maximum(mean_v - self.sa, 0)
+        penalty = np.maximum(mean_v, 0)
         lambda_param = 2.0
         
         return ei_f - lambda_param * penalty
