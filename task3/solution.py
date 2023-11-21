@@ -26,17 +26,11 @@ class BO_algo():
         sigma_f = 0.15
         self.kernel_f = Matern(nu=2.5, length_scale=0.5)
         self.f = GaussianProcessRegressor(kernel=self.kernel_f, random_state=42, alpha=sigma_f**2)
-        
-        # Kernel and prior mean setup for v
+
         sigma_v = 0.0001
         self.kernel_v = Matern(nu=2.5, length_scale=0.5) + ConstantKernel(4)
         self.v = GaussianProcessRegressor(kernel=self.kernel_v, random_state=42, alpha=sigma_v**2)
-        
-        # X = np.linspace(DOMAIN[0][0], DOMAIN[0][1], 100)[:, None]
-        # y = np.ones(X.shape[0]) * 4
-        # self.v.fit(X, y)
-                
-        # Data storage
+
         self.x = np.array([])
         self.f_x = np.array([])
         self.v_x = np.array([])
@@ -55,15 +49,7 @@ class BO_algo():
         # using functions f and v.
         # In implementing this function, you may use
         # optimize_acquisition_function() defined below.
-        # if self.x.size == 0:
-        #     x_domain = np.linspace(*DOMAIN[0], 4000)[:, None]
-        #     c_val = np.vectorize(self.v)(x_domain)
-        #     x_valid = x_domain[c_val < SAFETY_THRESHOLD]
-        #     np.random.seed(0)
-        #     np.random.shuffle(x_valid)
-        #     x = x_valid[0]
-        #     return x
-        # else:
+
         x = self.optimize_acquisition_function()
 
         while np.abs(x-self.x[0]) <= 0.1:
@@ -121,29 +107,11 @@ class BO_algo():
 
         mean_f, std_f = self.f.predict(x, return_std=True)
         mean_v, _ = self.v.predict(x, return_std=True)
-        
 
-        # EI
-        # best_f = np.max(self.f_x)
-        # delta = (best_f - mean_f)
-        # z_f = delta / std_f
-        # ei_f = delta * norm.cdf(z_f) + std_f * norm.pdf(z_f)
-        
-        # UCB
-        # beta = 0.3
-        # ei_f = mean_f + beta * std_f
         
         # LCB
         beta = 0.75
         ei_f = mean_f - beta * std_f
-        
-        # PI
-        # best_f = np.max(self.f_x)
-        
-        # z_f = (mean_f - best_f) / std_f
-        # ei_f = norm.cdf(z_f)
-        
-        # p = norm.cdf((self.sa - mean_v) / std_v)
         
         
         penalty = np.maximum(mean_v, 0)
@@ -188,12 +156,7 @@ class BO_algo():
         prediction = np.copy(self.f_x)
         prediction[np.where(self.v_x >= self.sa)] = -np.inf
         return self.x[np.argmax(prediction)]
-        # search_range = np.linspace(DOMAIN[0][0], DOMAIN[0][1], 100000)
-        # mean_f, _ = self.f.predict(search_range.reshape(-1, 1), return_std=True)
-        # mean_v, _ = self.v.predict(search_range.reshape(-1, 1), return_std=True)
-        # mean_f[np.where(mean_v >= self.sa)] = -np.inf
-        # max_index = np.argmax(mean_f)
-        # return search_range[max_index]
+
         
     def plot(self, plot_recommendation: bool = True):
         """Plot objective and constraint posterior for debugging (OPTIONAL).
