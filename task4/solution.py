@@ -14,13 +14,15 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 GAUSSIAN_POLICY = True
-HIDDEN_SIZE = 128
-HIDDEN_LAYERS = 2
+HIDDEN_SIZE = 256
+HIDDEN_LAYERS = 1
 ACTOR_LR = 1e-3
 CRITIC_LR = 1e-3
 ALPHA_LR = 1e-3
 GAMMA = 0.99
 TAU = 0.005
+LOG_STD_MIN = -5
+LOG_STD_MAX = 2
 
 
 class NeuralNetwork(nn.Module):
@@ -60,8 +62,8 @@ class Actor:
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.device = device
-        self.LOG_STD_MIN = -20
-        self.LOG_STD_MAX = 2
+        self.LOG_STD_MIN = LOG_STD_MIN
+        self.LOG_STD_MAX = LOG_STD_MAX
         self.setup_actor()
 
     def setup_actor(self):
@@ -162,6 +164,7 @@ class Agent:
         self.target_critic1 = None
         self.target_critic2 = None
         self.alpha = None
+        self.target_entropy = None
         self.state_dim = 3  # [cos(theta), sin(theta), theta_dot]
         self.action_dim = 1  # [torque] in[-1,1]
         self.batch_size = 200
@@ -184,10 +187,12 @@ class Agent:
                                      self.device)
         self.target_critic2 = Critic(HIDDEN_SIZE, HIDDEN_LAYERS, CRITIC_LR, self.state_dim, self.action_dim,
                                      self.device)
-        self.alpha = TrainableParameter(1.0, ALPHA_LR, True, self.device)
+        self.alpha = TrainableParameter(1, ALPHA_LR, True, self.device)
         # Copy the critic parameters to target critic
         self.critic_target_update(self.critic1.Q, self.target_critic1.Q, 1.0, False)
         self.critic_target_update(self.critic2.Q, self.target_critic2.Q, 1.0, False)
+        # Target entropy
+        self.target_entropy = -self.action_dim
 
     def get_action(self, s: np.ndarray, train: bool) -> np.ndarray:
         """
@@ -278,6 +283,10 @@ class Agent:
         q = torch.min(q1, q2)
         actor_loss = (self.alpha.get_param() * log_prob - q)
         self.run_gradient_update_step(self.actor, actor_loss)
+
+        # Update alpha by one step of gradient ascent
+        alpha_loss = -self.alpha.get_log_param() * (log_prob + self.target_entropy).detach()
+        self.run_gradient_update_step(self.alpha, alpha_loss)
 
         # Soft update of the target networks
         self.critic_target_update(self.critic1.Q, self.target_critic1.Q, TAU, True)
